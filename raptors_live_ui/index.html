@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Raptors Live Scoreboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <header class="hero">
+      <div class="hero__title">
+        <span class="hero__badge">TOR</span>
+        <div>
+          <p class="hero__eyebrow">Live Game Center</p>
+          <h1>Raptors Courtside</h1>
+        </div>
+      </div>
+      <div class="hero__meta">
+        <p id="updated">Updated --</p>
+        <p id="status">Waiting for tipoff</p>
+      </div>
+      <div class="hero__controls">
+        <label class="zoom-control">
+          Zoom
+          <select id="zoom-select">
+            <option value="0.8">80%</option>
+            <option value="0.9">90%</option>
+            <option value="1">100%</option>
+            <option value="1.1">110%</option>
+            <option value="1.2">120%</option>
+          </select>
+        </label>
+        <button class="hero__toggle" id="scoreboard-toggle" type="button">Compact</button>
+      </div>
+    </header>
+
+    <main class="layout" id="app">
+      <section class="scoreboard" id="scoreboard">
+        <div class="scoreboard__teams">
+          <div class="team-card" id="away-card"></div>
+          <div class="scoreboard__center" id="game-center"></div>
+          <div class="team-card" id="home-card"></div>
+        </div>
+        <div class="scoreboard__details" id="game-details"></div>
+        <div class="periods" id="periods"></div>
+      </section>
+
+      <section class="tables">
+        <div class="table-card">
+          <div class="table-card__header" id="away-header"></div>
+          <div class="table-card__body" id="away-table"></div>
+        </div>
+        <div class="table-card">
+          <div class="table-card__header" id="home-header"></div>
+          <div class="table-card__body" id="home-table"></div>
+        </div>
+      </section>
+
+      <section class="fallback" id="fallback"></section>
+    </main>
+
+    <script>
+      fetch("/api/ping", { cache: "no-store" }).catch(() => {});
+      window.onerror = function (message, source, lineno, colno) {
+        const msg = encodeURIComponent(`${message} @ ${source}:${lineno}:${colno}`);
+        fetch(`/api/log?msg=${msg}`).catch(() => {});
+      };
+    </script>
+    <script src="app.js"></script>
+  </body>
+</html>
