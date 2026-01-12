@@ -10,7 +10,6 @@ from socketserver import TCPServer
 import webview
 from nba_api.live.nba.endpoints import scoreboard, boxscore
 
-TEAM_TRICODE = "TOR"
 REFRESH_SECONDS = 10
 LOG = logging.getLogger("raptors_live")
 
@@ -170,6 +169,10 @@ def _summarize_game(game):
         "statusText": game.get("gameStatusText") or "",
         "status": game.get("gameStatus"),
         "clock": game.get("gameClock") or "",
+        "period": game.get("period"),
+        "startTimeUTC": game.get("gameTimeUTC") or "",
+        "home": _team_from_scoreboard(home),
+        "away": _team_from_scoreboard(away),
     }
 
 
@@ -183,7 +186,7 @@ def _map_status(game_status, status_text):
     return status_text or "Unknown"
 
 
-def build_state():
+def build_state(game_id=None):
     updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     LOG.info("build_state start")
     try:
@@ -199,6 +202,8 @@ def build_state():
             "games": [],
         }
 
+    summaries = [_summarize_game(g) for g in games]
+
     if not games:
         return {
             "status": "no_games",
@@ -206,41 +211,53 @@ def build_state():
             "games": [],
         }
 
-    raptors_game = None
-    for game in games:
-        home_tri = (game.get("homeTeam") or {}).get("teamTricode")
-        away_tri = (game.get("awayTeam") or {}).get("teamTricode")
-        if home_tri == TEAM_TRICODE or away_tri == TEAM_TRICODE:
-            raptors_game = game
-            break
-
-    if not raptors_game:
-        LOG.info("no Raptors game found")
+    if not game_id:
         return {
-            "status": "no_raptors_game",
+            "status": "select_game",
             "updated": updated,
-            "games": [_summarize_game(g) for g in games],
+            "games": summaries,
         }
 
-    game_status = raptors_game.get("gameStatus")
-    status_text = raptors_game.get("gameStatusText") or ""
+    selected_game = next((g for g in games if g.get("gameId") == game_id), None)
+    if not selected_game:
+        LOG.info("game id %s not found in scoreboard", game_id)
+        return {
+            "status": "game_not_found",
+            "updated": updated,
+            "games": summaries,
+        }
+
+    game_status = selected_game.get("gameStatus")
+    status_text = selected_game.get("gameStatusText") or ""
 
     base_game = {
-        "gameId": raptors_game.get("gameId"),
+        "gameId": selected_game.get("gameId"),
         "status": _map_status(game_status, status_text),
         "statusText": status_text,
-        "period": raptors_game.get("period"),
-        "clock": raptors_game.get("gameClock") or "",
-        "startTimeUTC": raptors_game.get("gameTimeUTC") or "",
+        "period": selected_game.get("period"),
+        "clock": selected_game.get("gameClock") or "",
+        "startTimeUTC": selected_game.get("gameTimeUTC") or "",
         "arena": {
-            "name": raptors_game.get("arenaName") or "",
-            "city": raptors_game.get("arenaCity") or "",
-            "state": raptors_game.get("arenaState") or "",
+            "name": selected_game.get("arenaName") or "",
+            "city": selected_game.get("arenaCity") or "",
+            "state": selected_game.get("arenaState") or "",
         },
     }
 
-    home_fallback = _team_from_scoreboard(raptors_game.get("homeTeam") or {})
-    away_fallback = _team_from_scoreboard(raptors_game.get("awayTeam") or {})
+    home_fallback = _team_from_scoreboard(selected_game.get("homeTeam") or {})
+    away_fallback = _team_from_scoreboard(selected_game.get("awayTeam") or {})
+
+    if game_status not in (2, 3):
+        return {
+            "status": "scheduled",
+            "updated": updated,
+            "game": base_game,
+            "games": summaries,
+            "periods": [],
+            "home": {**home_fallback, "stats": {}, "players": []},
+            "away": {**away_fallback, "stats": {}, "players": []},
+            "error": None,
+        }
 
     error = None
     try:
@@ -285,6 +302,7 @@ def build_state():
         "status": "ok",
         "updated": updated,
         "game": base_game,
+        "games": summaries,
         "periods": periods,
         "home": home,
         "away": away,
@@ -301,9 +319,9 @@ class RaptorsLiveAPI:
             "game": None,
         }
 
-    def get_state(self):
+    def get_state(self, game_id=None):
         LOG.info("js->get_state called")
-        state = build_state()
+        state = build_state(game_id)
         with self._lock:
             self._last_state = state
         LOG.info("js->get_state returning %s", state.get("status"))
@@ -353,7 +371,9 @@ if __name__ == "__main__":
                 return
             if parsed.path == "/api/state":
                 LOG.info("http /api/state requested")
-                state = build_state()
+                query = parse_qs(parsed.query)
+                game_id = (query.get("gameId") or [""])[0] or None
+                state = build_state(game_id)
                 payload = json.dumps(state).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -374,7 +394,7 @@ if __name__ == "__main__":
 
     LOG.info("starting webview")
     window = webview.create_window(
-        "Raptors Live Scoreboard",
+        "NBA Live Game Center",
         url=f"http://127.0.0.1:{port}/index.html",
         width=1280,
         height=800,
