@@ -1,7 +1,7 @@
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from http.server import SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
@@ -12,6 +12,62 @@ from nba_api.live.nba.endpoints import scoreboard, boxscore
 
 REFRESH_SECONDS = 10
 LOG = logging.getLogger("raptors_live")
+BOX_CACHE = {}
+BOX_BACKOFF = {}
+MAX_BACKOFF_SECONDS = 60
+FAVORITES_PATH = Path(__file__).resolve().parent / "raptors_live_ui" / "resources" / "favorites.json"
+
+
+def _now_utc_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _get_backoff(game_id):
+    entry = BOX_BACKOFF.get(game_id)
+    if not entry:
+        return None
+    if datetime.now(timezone.utc) >= entry["nextAllowed"]:
+        return None
+    return entry
+
+
+def _set_backoff(game_id):
+    current = BOX_BACKOFF.get(game_id)
+    delay = current["delay"] if current else 1
+    delay = min(delay * 2, MAX_BACKOFF_SECONDS)
+    BOX_BACKOFF[game_id] = {
+        "delay": delay,
+        "nextAllowed": datetime.now(timezone.utc) + timedelta(seconds=delay),
+    }
+
+
+def _clear_backoff(game_id):
+    if game_id in BOX_BACKOFF:
+        del BOX_BACKOFF[game_id]
+
+
+def _load_favorites():
+    try:
+        if not FAVORITES_PATH.exists():
+            return []
+        with FAVORITES_PATH.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        LOG.exception("failed to load favorites")
+    return []
+
+
+def _save_favorites(favorites):
+    try:
+        FAVORITES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with FAVORITES_PATH.open("w", encoding="utf-8") as handle:
+            json.dump(list(favorites), handle)
+        return True
+    except Exception:
+        LOG.exception("failed to save favorites")
+        return False
 
 
 def _safe_stat(stats, key, default=0):
@@ -187,7 +243,7 @@ def _map_status(game_status, status_text):
 
 
 def build_state(game_id=None):
-    updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated = _now_utc_iso()
     LOG.info("build_state start")
     try:
         board = scoreboard.ScoreBoard()
@@ -251,6 +307,7 @@ def build_state(game_id=None):
         return {
             "status": "scheduled",
             "updated": updated,
+            "dataUpdated": updated,
             "game": base_game,
             "games": summaries,
             "periods": [],
@@ -259,15 +316,45 @@ def build_state(game_id=None):
             "error": None,
         }
 
+    cache = BOX_CACHE.get(base_game["gameId"])
+    backoff = _get_backoff(base_game["gameId"])
+    if backoff and cache:
+        LOG.info("backoff active for %s; using cached boxscore", base_game["gameId"])
+        return {
+            "status": "ok",
+            "updated": updated,
+            "dataUpdated": cache.get("dataUpdated", updated),
+            "game": base_game,
+            "games": summaries,
+            "periods": cache.get("periods", []),
+            "home": cache.get("home", {**home_fallback, "stats": {}, "players": []}),
+            "away": cache.get("away", {**away_fallback, "stats": {}, "players": []}),
+            "error": "Using cached data during API backoff.",
+        }
+
     error = None
     try:
         LOG.info("fetching boxscore for %s", base_game["gameId"])
         box = boxscore.BoxScore(base_game["gameId"]).get_dict()
         LOG.info("boxscore received")
+        _clear_backoff(base_game["gameId"])
     except Exception as exc:
         LOG.exception("boxscore error")
         box = {}
         error = str(exc)
+        _set_backoff(base_game["gameId"])
+        if cache:
+            return {
+                "status": "ok",
+                "updated": updated,
+                "dataUpdated": cache.get("dataUpdated", updated),
+                "game": base_game,
+                "games": summaries,
+                "periods": cache.get("periods", []),
+                "home": cache.get("home", {**home_fallback, "stats": {}, "players": []}),
+                "away": cache.get("away", {**away_fallback, "stats": {}, "players": []}),
+                "error": "Using cached data after boxscore error.",
+            }
 
     game_data = box.get("game") or {}
     period_count = int(game_data.get("period") or base_game.get("period") or 0)
@@ -298,9 +385,17 @@ def build_state(game_id=None):
     away = _team_from_boxscore(away_box, away_fallback, period_count) if away_box else {**away_fallback, "stats": {}, "players": []}
 
     LOG.info("build_state ok")
+    if home.get("players") and away.get("players"):
+        BOX_CACHE[base_game["gameId"]] = {
+            "home": home,
+            "away": away,
+            "periods": periods,
+            "dataUpdated": updated,
+        }
     return {
-        "status": "ok",
+        "status": "ok" if (home.get("players") or away.get("players")) else ("postgame" if game_status == 3 else "live_no_data"),
         "updated": updated,
+        "dataUpdated": BOX_CACHE.get(base_game["gameId"], {}).get("dataUpdated", updated),
         "game": base_game,
         "games": summaries,
         "periods": periods,
@@ -318,6 +413,7 @@ class RaptorsLiveAPI:
             "updated": None,
             "game": None,
         }
+        self._favorites = _load_favorites()
 
     def get_state(self, game_id=None):
         LOG.info("js->get_state called")
@@ -331,6 +427,20 @@ class RaptorsLiveAPI:
         LOG.info("js->get_last_state called")
         with self._lock:
             return self._last_state
+
+    def get_favorites(self):
+        LOG.info("js->get_favorites called")
+        with self._lock:
+            return list(self._favorites)
+
+    def set_favorites(self, favorites):
+        LOG.info("js->set_favorites called")
+        if not isinstance(favorites, list):
+            return {"status": "error", "error": "favorites must be a list"}
+        with self._lock:
+            self._favorites = favorites
+        saved = _save_favorites(favorites)
+        return {"status": "ok" if saved else "error"}
 
 
 if __name__ == "__main__":
@@ -381,7 +491,36 @@ if __name__ == "__main__":
                 self.end_headers()
                 self.wfile.write(payload)
                 return
+            if parsed.path == "/api/favorites":
+                LOG.info("http /api/favorites requested")
+                payload = json.dumps(api.get_favorites()).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             super().do_GET()
+
+        def do_POST(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/favorites":
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length)
+                try:
+                    payload = json.loads(body.decode("utf-8") or "[]")
+                except json.JSONDecodeError:
+                    payload = []
+                result = api.set_favorites(payload)
+                response = json.dumps(result).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+                return
+            self.send_response(404)
+            self.end_headers()
 
         def log_message(self, format, *args):
             LOG.info("http %s", format % args)

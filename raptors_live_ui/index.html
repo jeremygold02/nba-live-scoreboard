@@ -51,19 +51,37 @@
       </section>
       <section class="game-view" id="game-view" hidden>
         <div class="game-view__header">
-          <button id="back-to-list" type="button">Back to games</button>
+          <div class="game-view__actions">
+            <button id="back-to-list" type="button">Back to games</button>
+            <button id="table-toggle" type="button">Stats: Compact</button>
+          </div>
           <div class="game-view__meta">
             <span id="selected-game-view">Select a game</span>
           </div>
         </div>
+        <div class="status-ribbon" id="status-ribbon"></div>
         <section class="scoreboard" id="scoreboard">
           <div class="scoreboard__teams">
             <div class="team-card" id="away-card"></div>
             <div class="scoreboard__center" id="game-center"></div>
             <div class="team-card" id="home-card"></div>
           </div>
-          <div class="scoreboard__details" id="game-details"></div>
-          <div class="periods" id="periods"></div>
+          <div class="scoreboard__details">
+            <div id="game-details"></div>
+            <button id="periods-toggle" type="button">Quarters: Show</button>
+          </div>
+          <div class="periods is-collapsed" id="periods"></div>
+        </section>
+
+        <section class="lineups" id="lineups">
+          <div class="lineups__column">
+            <h3 id="away-lineup-title"></h3>
+            <div id="away-lineup"></div>
+          </div>
+          <div class="lineups__column">
+            <h3 id="home-lineup-title"></h3>
+            <div id="home-lineup"></div>
+          </div>
         </section>
 
         <section class="tables">
@@ -75,6 +93,14 @@
             <div class="table-card__header" id="home-header"></div>
             <div class="table-card__body" id="home-table"></div>
           </div>
+        </section>
+
+        <section class="comparison is-collapsed" id="comparison">
+          <div class="comparison__head">
+            <h3>Team Comparison</h3>
+            <button id="comparison-toggle" type="button">Comparison: Show</button>
+          </div>
+          <div class="comparison__body" id="comparison-body"></div>
         </section>
 
         <section class="fallback" id="fallback"></section>

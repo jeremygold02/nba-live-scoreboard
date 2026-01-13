@@ -6,8 +6,18 @@ const statusEl = document.getElementById("status");
 const awayCard = document.getElementById("away-card");
 const homeCard = document.getElementById("home-card");
 const centerCard = document.getElementById("game-center");
+const statusRibbonEl = document.getElementById("status-ribbon");
 const detailsEl = document.getElementById("game-details");
+const periodsToggleBtn = document.getElementById("periods-toggle");
 const periodsEl = document.getElementById("periods");
+const comparisonEl = document.getElementById("comparison");
+const comparisonBodyEl = document.getElementById("comparison-body");
+const comparisonToggleBtn = document.getElementById("comparison-toggle");
+const lineupsEl = document.getElementById("lineups");
+const awayLineupTitleEl = document.getElementById("away-lineup-title");
+const homeLineupTitleEl = document.getElementById("home-lineup-title");
+const awayLineupEl = document.getElementById("away-lineup");
+const homeLineupEl = document.getElementById("home-lineup");
 const awayHeader = document.getElementById("away-header");
 const homeHeader = document.getElementById("home-header");
 const awayTable = document.getElementById("away-table");
@@ -19,6 +29,7 @@ const clearSelectionBtn = document.getElementById("clear-selection");
 const listViewEl = document.getElementById("list-view");
 const gameViewEl = document.getElementById("game-view");
 const backBtn = document.getElementById("back-to-list");
+const tableToggleBtn = document.getElementById("table-toggle");
 const fallbackEl = document.getElementById("fallback");
 const scoreboardEl = document.getElementById("scoreboard");
 const toggleBtn = document.getElementById("scoreboard-toggle");
@@ -26,6 +37,46 @@ const zoomSelect = document.getElementById("zoom-select");
 const appRoot = document.getElementById("app");
 let activeCell = null;
 let selectedGameId = localStorage.getItem("nba-selected-game") || "";
+let lastUpdatedAt = null;
+let updatedTimer = null;
+let lastGames = [];
+const favoriteTeams = new Set();
+const lastScores = new Map();
+const notifiedGames = new Set(loadNotifiedGames());
+const lastGameStatuses = new Map();
+const tableCache = new Map();
+const teamColors = {
+  ATL: "#e03a3e",
+  BOS: "#007a33",
+  BKN: "#111111",
+  CHA: "#1d1160",
+  CHI: "#ce1141",
+  CLE: "#6f263d",
+  DAL: "#00538c",
+  DEN: "#0e2240",
+  DET: "#c8102e",
+  GSW: "#1d428a",
+  HOU: "#ce1141",
+  IND: "#002d62",
+  LAC: "#c8102e",
+  LAL: "#552583",
+  MEM: "#5d76a9",
+  MIA: "#98002e",
+  MIL: "#00471b",
+  MIN: "#0c2340",
+  NOP: "#0c2340",
+  NYK: "#006bb6",
+  OKC: "#007ac1",
+  ORL: "#0077c0",
+  PHI: "#006bb6",
+  PHX: "#1d1160",
+  POR: "#e03a3e",
+  SAC: "#5a2d81",
+  SAS: "#c4ced4",
+  TOR: "#ce1141",
+  UTA: "#002b5c",
+  WAS: "#002b5c",
+};
 
 const columns = [
   "MIN",
@@ -67,6 +118,137 @@ function setText(el, text) {
   el.textContent = text;
 }
 
+function toRgba(hex, alpha) {
+  if (!hex) return `rgba(255, 255, 255, ${alpha})`;
+  const value = hex.replace("#", "");
+  if (value.length !== 6) return `rgba(255, 255, 255, ${alpha})`;
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function getTeamColor(tricode) {
+  return teamColors[tricode] || "#2e7ac7";
+}
+
+function parseUpdated(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.valueOf())) {
+    return parsed.valueOf();
+  }
+  const fallback = Date.parse(String(value).replace(" ", "T"));
+  return Number.isNaN(fallback) ? null : fallback;
+}
+
+function formatRelativeTime(seconds) {
+  if (seconds < 1) return "just now";
+  if (seconds < 60) return `${Math.floor(seconds)}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function updateUpdatedLabel() {
+  if (!lastUpdatedAt) return;
+  const diffSeconds = Math.max(0, (Date.now() - lastUpdatedAt) / 1000);
+  setText(updatedEl, `Updated ${formatRelativeTime(diffSeconds)}`);
+}
+
+function setUpdatedTime(value) {
+  const parsed = parseUpdated(value);
+  lastUpdatedAt = parsed || Date.now();
+  updateUpdatedLabel();
+  if (!updatedTimer) {
+    updatedTimer = setInterval(updateUpdatedLabel, 1000);
+  }
+}
+
+function loadFavoriteTeamsFromStorage() {
+  try {
+    const raw = localStorage.getItem("nba-favorite-teams");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function saveFavoriteTeamsToStorage() {
+  localStorage.setItem("nba-favorite-teams", JSON.stringify([...favoriteTeams]));
+}
+
+function toggleFavoriteTeam(tricode) {
+  if (!tricode) return;
+  if (favoriteTeams.has(tricode)) {
+    favoriteTeams.delete(tricode);
+  } else {
+    favoriteTeams.add(tricode);
+  }
+  saveFavoriteTeams();
+  renderGameList(lastGames);
+  if (favoriteTeams.size && window.Notification && Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+async function getFavorites() {
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.get_favorites) {
+    return window.pywebview.api.get_favorites();
+  }
+  try {
+    const response = await fetch("/api/favorites", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response.json();
+  } catch (err) {
+    return loadFavoriteTeamsFromStorage();
+  }
+}
+
+async function saveFavoriteTeams() {
+  const payload = [...favoriteTeams];
+  saveFavoriteTeamsToStorage();
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.set_favorites) {
+    return window.pywebview.api.set_favorites(payload);
+  }
+  try {
+    await fetch("/api/favorites", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    // Ignore save failures; localStorage will persist for this origin.
+  }
+}
+
+async function hydrateFavorites() {
+  const favorites = await getFavorites();
+  favoriteTeams.clear();
+  favorites.forEach((team) => favoriteTeams.add(team));
+  renderGameList(lastGames);
+}
+
+function loadNotifiedGames() {
+  try {
+    const raw = localStorage.getItem("nba-notified-games");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function saveNotifiedGames() {
+  localStorage.setItem("nba-notified-games", JSON.stringify([...notifiedGames]));
+}
+
 function formatPct(value) {
   if (typeof value !== "number") return "--";
   return `${value.toFixed(1)}%`;
@@ -79,9 +261,25 @@ function formatShotPct(made, attempted) {
   return `${((made / attempted) * 100).toFixed(1)}%`;
 }
 
+function calcShotPct(made, attempted) {
+  if (!Number.isFinite(made) || !Number.isFinite(attempted) || attempted <= 0) {
+    return null;
+  }
+  return (made / attempted) * 100;
+}
+
 function renderTeamCard(container, team) {
   container.className = "team-card";
   container.innerHTML = "";
+
+  const color = getTeamColor(team.tricode);
+  container.style.setProperty("--team-color", color);
+  container.style.setProperty("--team-color-soft", toRgba(color, 0.35));
+
+  const header = document.createElement("div");
+  header.className = "team-header";
+
+  const nameWrap = document.createElement("div");
 
   const name = document.createElement("div");
   name.className = "team-name";
@@ -91,15 +289,44 @@ function renderTeamCard(container, team) {
   title.className = "team-title";
   title.textContent = `${team.name} (${team.tricode})`;
 
+  nameWrap.append(name, title);
+
+  const logoWrap = document.createElement("div");
+  logoWrap.className = "team-logo-wrap";
+
+  const logo = document.createElement("img");
+  logo.className = "team-logo";
+  if (team.id) {
+    logo.src = `/resources/logos/${team.id}.svg`;
+  }
+  logo.alt = `${team.name || "Team"} logo`;
+  logo.loading = "lazy";
+  logo.referrerPolicy = "no-referrer";
+  logo.dataset.fallbackTried = "0";
+  logo.onload = () => {
+    logoWrap.classList.add("is-loaded");
+  };
+  logo.onerror = () => {
+    logo.classList.add("is-hidden");
+  };
+
+  const fallback = document.createElement("div");
+  fallback.className = "team-logo-fallback";
+  fallback.textContent = team.tricode || "";
+
+  logoWrap.append(logo, fallback);
+  header.append(nameWrap, logoWrap);
+
   const score = document.createElement("div");
   score.className = "team-score";
   score.textContent = team.score ?? "-";
+  animateScore(score, team);
 
   const record = document.createElement("div");
   record.className = "team-record";
   record.textContent = formatRecord(team);
 
-  container.append(name, title, score, record);
+  container.append(header, score, record);
 }
 
 function renderCenter(game) {
@@ -137,6 +364,22 @@ function formatClock(value) {
   const minutes = match[1].padStart(1, "0");
   const seconds = Math.floor(parseFloat(match[2])).toString().padStart(2, "0");
   return `${minutes}:${seconds}`;
+}
+
+function animateScore(scoreEl, team) {
+  const key = team.id || team.tricode || "";
+  if (!key) return;
+  const current = Number.isFinite(team.score) ? team.score : Number(team.score);
+  if (!Number.isFinite(current)) return;
+  const prev = lastScores.get(key);
+  lastScores.set(key, current);
+  if (prev === undefined || current <= prev) return;
+  scoreEl.classList.remove("score-bump");
+  void scoreEl.offsetWidth;
+  scoreEl.classList.add("score-bump");
+  setTimeout(() => {
+    scoreEl.classList.remove("score-bump");
+  }, 700);
 }
 
 function shouldShowPhase(game, clockText) {
@@ -291,6 +534,18 @@ function buildTable(team) {
   return wrapper;
 }
 
+function renderTeamTable(container, team, cacheKey) {
+  if (!container) return;
+  const hash = JSON.stringify({ players: team.players, stats: team.stats });
+  const cached = tableCache.get(cacheKey);
+  if (cached && cached.hash === hash) {
+    return;
+  }
+  container.innerHTML = "";
+  container.appendChild(buildTable(team));
+  tableCache.set(cacheKey, { hash });
+}
+
 function cell(value) {
   const td = document.createElement("td");
   td.textContent = value ?? "-";
@@ -303,7 +558,7 @@ function renderHeaders(home, away) {
 
   const awayTitle = document.createElement("div");
   awayTitle.className = "table-title";
-  awayTitle.textContent = `${away.name} (${away.tricode})`;
+  awayTitle.append(buildLogoBadge(away), document.createTextNode(`${away.name} (${away.tricode})`));
 
   const awaySub = document.createElement("div");
   awaySub.className = "table-subtitle";
@@ -313,7 +568,7 @@ function renderHeaders(home, away) {
 
   const homeTitle = document.createElement("div");
   homeTitle.className = "table-title";
-  homeTitle.textContent = `${home.name} (${home.tricode})`;
+  homeTitle.append(buildLogoBadge(home), document.createTextNode(`${home.name} (${home.tricode})`));
 
   const homeSub = document.createElement("div");
   homeSub.className = "table-subtitle";
@@ -333,7 +588,13 @@ function clearFallback() {
 function renderPeriods(periods, home, away) {
   periodsEl.innerHTML = "";
   if (!periods || !periods.length) {
+    if (periodsToggleBtn) {
+      periodsToggleBtn.disabled = true;
+    }
     return;
+  }
+  if (periodsToggleBtn) {
+    periodsToggleBtn.disabled = false;
   }
 
   const table = document.createElement("table");
@@ -375,6 +636,171 @@ function renderPeriods(periods, home, away) {
   tbody.append(awayRow, homeRow);
   table.appendChild(tbody);
   periodsEl.appendChild(table);
+}
+
+function setPeriodsOpen(open) {
+  if (!periodsEl || !periodsToggleBtn) return;
+  periodsEl.classList.toggle("is-collapsed", !open);
+  periodsToggleBtn.textContent = open ? "Quarters: Hide" : "Quarters: Show";
+  localStorage.setItem("nba-periods-open", open ? "1" : "0");
+}
+
+function setComparisonOpen(open) {
+  if (!comparisonEl || !comparisonToggleBtn) return;
+  comparisonEl.classList.toggle("is-collapsed", !open);
+  comparisonToggleBtn.textContent = open ? "Comparison: Hide" : "Comparison: Show";
+  localStorage.setItem("nba-comparison-open", open ? "1" : "0");
+}
+
+function renderComparison(home, away) {
+  if (!comparisonEl || !comparisonBodyEl) return;
+  if (!home || !away || !home.stats || !away.stats) {
+    comparisonBodyEl.innerHTML = "";
+    if (comparisonToggleBtn) {
+      comparisonToggleBtn.disabled = true;
+    }
+    return;
+  }
+
+  comparisonBodyEl.innerHTML = "";
+  comparisonEl.style.setProperty("--away-color", getTeamColor(away.tricode));
+  comparisonEl.style.setProperty("--home-color", getTeamColor(home.tricode));
+  if (comparisonToggleBtn) {
+    comparisonToggleBtn.disabled = false;
+  }
+
+  const rows = document.createElement("div");
+  rows.className = "comparison__rows";
+
+  const items = [
+    {
+      label: "FG%",
+      awayValue: calcShotPct(away.stats.fgm, away.stats.fga),
+      homeValue: calcShotPct(home.stats.fgm, home.stats.fga),
+      awayText: formatShotPct(away.stats.fgm, away.stats.fga),
+      homeText: formatShotPct(home.stats.fgm, home.stats.fga),
+    },
+    {
+      label: "3PT%",
+      awayValue: calcShotPct(away.stats.tpm, away.stats.tpa),
+      homeValue: calcShotPct(home.stats.tpm, home.stats.tpa),
+      awayText: formatShotPct(away.stats.tpm, away.stats.tpa),
+      homeText: formatShotPct(home.stats.tpm, home.stats.tpa),
+    },
+    {
+      label: "FT%",
+      awayValue: calcShotPct(away.stats.ftm, away.stats.fta),
+      homeValue: calcShotPct(home.stats.ftm, home.stats.fta),
+      awayText: formatShotPct(away.stats.ftm, away.stats.fta),
+      homeText: formatShotPct(home.stats.ftm, home.stats.fta),
+    },
+    {
+      label: "REB",
+      awayValue: away.stats.rebounds,
+      homeValue: home.stats.rebounds,
+      awayText: away.stats.rebounds ?? "-",
+      homeText: home.stats.rebounds ?? "-",
+    },
+    {
+      label: "AST",
+      awayValue: away.stats.assists,
+      homeValue: home.stats.assists,
+      awayText: away.stats.assists ?? "-",
+      homeText: home.stats.assists ?? "-",
+    },
+    {
+      label: "TO",
+      awayValue: away.stats.turnovers,
+      homeValue: home.stats.turnovers,
+      awayText: away.stats.turnovers ?? "-",
+      homeText: home.stats.turnovers ?? "-",
+    },
+  ];
+
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "comparison__row";
+
+    const label = document.createElement("div");
+    label.className = "comparison__label";
+    label.textContent = item.label;
+
+    const values = document.createElement("div");
+    values.className = "comparison__values";
+
+    const awayVal = document.createElement("div");
+    awayVal.className = "comparison__value comparison__value--away";
+    awayVal.textContent = item.awayText;
+
+    const homeVal = document.createElement("div");
+    homeVal.className = "comparison__value comparison__value--home";
+    homeVal.textContent = item.homeText;
+
+    const bar = document.createElement("div");
+    bar.className = "comparison__bar";
+    const barFill = document.createElement("div");
+    barFill.className = "comparison__bar-fill";
+    bar.appendChild(barFill);
+
+    let awayRatio = 0.5;
+    if (Number.isFinite(item.awayValue) && Number.isFinite(item.homeValue)) {
+      const total = item.awayValue + item.homeValue;
+      if (total > 0) {
+        awayRatio = item.awayValue / total;
+      }
+    }
+    barFill.style.setProperty("--away-ratio", awayRatio);
+
+    values.append(awayVal, bar, homeVal);
+    row.append(label, values);
+    rows.appendChild(row);
+  });
+
+  comparisonBodyEl.appendChild(rows);
+}
+
+function renderLineups(home, away) {
+  if (!lineupsEl || !awayLineupEl || !homeLineupEl || !awayLineupTitleEl || !homeLineupTitleEl) return;
+  const awayStarters = (away.players || []).filter((player) => player.starter).slice(0, 5);
+  const homeStarters = (home.players || []).filter((player) => player.starter).slice(0, 5);
+
+  if (!awayStarters.length && !homeStarters.length) {
+    lineupsEl.classList.add("is-hidden");
+    awayLineupEl.innerHTML = "";
+    homeLineupEl.innerHTML = "";
+    return;
+  }
+
+  lineupsEl.classList.remove("is-hidden");
+  awayLineupTitleEl.textContent = `${away.tricode || ""} Starters`;
+  homeLineupTitleEl.textContent = `${home.tricode || ""} Starters`;
+
+  awayLineupEl.innerHTML = "";
+  homeLineupEl.innerHTML = "";
+
+  awayStarters.forEach((player) => {
+    awayLineupEl.appendChild(buildLineupRow(player));
+  });
+  homeStarters.forEach((player) => {
+    homeLineupEl.appendChild(buildLineupRow(player));
+  });
+}
+
+function buildLineupRow(player) {
+  const row = document.createElement("div");
+  row.className = "lineup-row";
+
+  const name = document.createElement("span");
+  name.className = "lineup-row__name";
+  name.textContent = player.name || "Unknown";
+
+  const meta = document.createElement("span");
+  meta.className = "lineup-row__meta";
+  const minutes = formatClock(player.minutes) || "0:00";
+  meta.textContent = `${player.position || "-"} | ${minutes}`;
+
+  row.append(name, meta);
+  return row;
 }
 
 function showListView() {
@@ -426,6 +852,12 @@ function fallbackForStatus(status) {
   if (status === "scheduled") {
     return "Tipoff hasn't happened yet. Live box score will appear once the game starts.";
   }
+  if (status === "postgame") {
+    return "Final just ended. Box score will populate shortly.";
+  }
+  if (status === "live_no_data") {
+    return "Live box score loading. Retry in a moment.";
+  }
   return "Waiting for game data...";
 }
 
@@ -435,6 +867,18 @@ function clearGameUI() {
   centerCard.innerHTML = "";
   detailsEl.innerHTML = "";
   periodsEl.innerHTML = "";
+  if (comparisonBodyEl) {
+    comparisonBodyEl.innerHTML = "";
+  }
+  if (lineupsEl) {
+    lineupsEl.classList.add("is-hidden");
+  }
+  if (awayLineupEl) {
+    awayLineupEl.innerHTML = "";
+  }
+  if (homeLineupEl) {
+    homeLineupEl.innerHTML = "";
+  }
   awayHeader.innerHTML = "";
   homeHeader.innerHTML = "";
   awayTable.innerHTML = "";
@@ -460,6 +904,7 @@ function formatTipoff(value) {
 
 function renderGameList(games) {
   if (!gamesEl) return;
+  lastGames = games || [];
   gamesEl.innerHTML = "";
 
   if (!games || !games.length) {
@@ -481,11 +926,22 @@ function renderGameList(games) {
 
   let selectedLabel = "Select a game";
 
-  games.forEach((game) => {
+  const withIndex = games.map((game, index) => ({ game, index }));
+  withIndex.sort((a, b) => {
+    const aFav = isFavoriteGame(a.game);
+    const bFav = isFavoriteGame(b.game);
+    if (aFav !== bFav) return aFav ? -1 : 1;
+    return a.index - b.index;
+  });
+
+  withIndex.forEach(({ game }) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "game-item";
     button.dataset.gameId = game.gameId;
+    if (isFavoriteGame(game)) {
+      button.classList.add("game-item--favorite");
+    }
 
     if (selectedGameId && game.gameId === selectedGameId) {
       button.classList.add("is-selected");
@@ -498,11 +954,25 @@ function renderGameList(games) {
     const home = game.home || {};
     const title = document.createElement("div");
     title.className = "game-item__title";
-    title.textContent = `${away.city || ""} ${away.name || ""} vs ${home.city || ""} ${home.name || ""}`.trim();
 
-    const subtitle = document.createElement("div");
-    subtitle.className = "game-item__subtitle";
-    subtitle.textContent = `${away.tricode || "--"} @ ${home.tricode || "--"}`;
+    const awayLine = document.createElement("div");
+    awayLine.className = "game-item__teamline";
+    awayLine.append(
+      buildFavoriteButton(away.tricode),
+      buildLogoBadge(away),
+      document.createTextNode(`${away.city || ""} ${away.name || ""}`.trim()),
+      document.createTextNode(" vs"),
+    );
+
+    const homeLine = document.createElement("div");
+    homeLine.className = "game-item__teamline";
+    homeLine.append(
+      buildFavoriteButton(home.tricode),
+      buildLogoBadge(home),
+      document.createTextNode(`${home.city || ""} ${home.name || ""}`.trim()),
+    );
+
+    title.append(awayLine, homeLine);
 
     const meta = document.createElement("div");
     meta.className = "game-item__meta";
@@ -514,7 +984,7 @@ function renderGameList(games) {
     const score = shouldShowScore ? `${away.score ?? "-"} - ${home.score ?? "-"}` : "";
     meta.textContent = [status, clock, period, tipoff, score].filter(Boolean).join(" | ");
 
-    button.append(title, subtitle, meta);
+    button.append(title, meta);
     button.addEventListener("click", () => {
       setSelectedGameId(game.gameId);
     });
@@ -533,6 +1003,132 @@ function renderGameList(games) {
   }
 }
 
+function buildLogoBadge(team) {
+  const wrap = document.createElement("span");
+  wrap.className = "logo-badge";
+  if (!team || !team.id) {
+    wrap.textContent = team?.tricode || "";
+    return wrap;
+  }
+
+  const img = document.createElement("img");
+  img.src = `/resources/logos/${team.id}.svg`;
+  img.alt = `${team.name || "Team"} logo`;
+  img.loading = "lazy";
+
+  img.onerror = () => {
+    wrap.textContent = team.tricode || "";
+    img.remove();
+  };
+
+  wrap.appendChild(img);
+  return wrap;
+}
+
+function buildFavoriteButton(tricode) {
+  const favButton = document.createElement("button");
+  favButton.type = "button";
+  favButton.className = "team-fav";
+  const isFavorite = tricode && favoriteTeams.has(tricode);
+  if (isFavorite) {
+    favButton.classList.add("is-active");
+  }
+  if (!tricode) {
+    favButton.disabled = true;
+  }
+  favButton.setAttribute("aria-label", isFavorite ? "Unfavorite team" : "Favorite team");
+  favButton.title = isFavorite ? "Unfavorite team" : "Favorite team";
+  favButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleFavoriteTeam(tricode);
+  });
+  favButton.appendChild(buildHeartIcon());
+  return favButton;
+}
+
+function buildHeartIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute(
+    "d",
+    "M12 21s-6.4-4.2-9.1-7.4C.8 11.2 1 7.7 3.5 5.6c2-1.7 4.9-1.4 6.7.6L12 8l1.8-1.8c1.8-2 4.7-2.3 6.7-.6 2.5 2.1 2.7 5.6.6 8-2.7 3.2-9.1 7.4-9.1 7.4z",
+  );
+  svg.appendChild(path);
+  return svg;
+}
+
+function isFavoriteGame(game) {
+  if (!game) return false;
+  const away = (game.away || {}).tricode;
+  const home = (game.home || {}).tricode;
+  return (away && favoriteTeams.has(away)) || (home && favoriteTeams.has(home));
+}
+
+function renderStatusRibbon(state) {
+  if (!statusRibbonEl || !state || !state.game) return;
+  let text = state.game.statusText || state.game.status;
+  if (state.status === "scheduled") {
+    text = state.game.statusText || "Scheduled";
+  } else if (state.status === "postgame") {
+    text = "Final - box score pending";
+  } else if (state.status === "live_no_data") {
+    text = "Live - box score loading";
+  }
+  if (!text) {
+    statusRibbonEl.textContent = "";
+    statusRibbonEl.classList.remove("is-visible");
+    return;
+  }
+  statusRibbonEl.textContent = text;
+  statusRibbonEl.classList.add("is-visible");
+}
+
+function applyMatchupTheme(home, away) {
+  if (!gameViewEl) return;
+  const homeColor = getTeamColor(home.tricode);
+  const awayColor = getTeamColor(away.tricode);
+  gameViewEl.style.setProperty("--matchup-a", toRgba(awayColor, 0.18));
+  gameViewEl.style.setProperty("--matchup-b", toRgba(homeColor, 0.18));
+}
+
+function maybeNotifyGameStart(games) {
+  if (!games || !games.length) return;
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+
+  games.forEach((game) => {
+    if (!isFavoriteGame(game)) return;
+    const status = formatGameStatus(game);
+    const prevStatus = lastGameStatuses.get(game.gameId);
+    lastGameStatuses.set(game.gameId, status);
+
+    if (prevStatus && prevStatus !== "Live" && status === "Live" && !notifiedGames.has(game.gameId)) {
+      const away = game.away || {};
+      const home = game.home || {};
+      const title = "Favorite game is live";
+      const body = `${away.tricode || "--"} @ ${home.tricode || "--"} just started.`;
+      try {
+        new Notification(title, { body });
+        notifiedGames.add(game.gameId);
+        saveNotifiedGames();
+      } catch (err) {
+        // Ignore notification errors.
+      }
+    }
+  });
+}
+
+function setTableView(mode) {
+  const compact = mode === "compact";
+  document.body.classList.toggle("table-compact", compact);
+  if (tableToggleBtn) {
+    tableToggleBtn.textContent = compact ? "Stats: Compact" : "Stats: Expanded";
+  }
+  localStorage.setItem("nba-table-view", compact ? "compact" : "expanded");
+}
+
 async function getState() {
   const query = selectedGameId ? `?gameId=${encodeURIComponent(selectedGameId)}` : "";
   if (window.pywebview && window.pywebview.api && window.pywebview.api.get_state) {
@@ -547,13 +1143,13 @@ async function getState() {
   } catch (err) {
     return {
       status: "error",
-      updated: new Date().toLocaleTimeString(),
+      updated: new Date().toISOString(),
       error: `API fetch failed: ${err}`,
     };
   }
   return {
     status: "error",
-    updated: new Date().toLocaleTimeString(),
+    updated: new Date().toISOString(),
     error: "pywebview API not available. Run raptors_live.py.",
   };
 }
@@ -568,13 +1164,16 @@ async function refresh() {
     return;
   }
 
-  setText(updatedEl, `Updated ${state.updated || "--"}`);
+  setUpdatedTime(state.dataUpdated || state.updated);
 
   if (state.games && gamesEl) {
     renderGameList(state.games);
   }
+  if (state.games) {
+    maybeNotifyGameStart(state.games);
+  }
 
-  if (state.status !== "ok" && state.status !== "scheduled") {
+  if (state.status !== "ok" && state.status !== "scheduled" && state.status !== "postgame" && state.status !== "live_no_data") {
     statusEl.textContent = state.status.replace(/_/g, " ");
     renderFallback(state.error || fallbackForStatus(state.status));
     if (state.status === "game_not_found") {
@@ -585,17 +1184,19 @@ async function refresh() {
     if (state.status === "select_game") {
       showListView();
     }
+    renderStatusRibbon(state);
     clearGameUI();
     return;
   }
 
-  if (state.status === "scheduled") {
+  if (state.status === "scheduled" || state.status === "postgame" || state.status === "live_no_data") {
     renderFallback(fallbackForStatus(state.status));
   } else {
     clearFallback();
   }
   statusEl.textContent = state.game.statusText || state.game.status;
   showGameView();
+  renderStatusRibbon(state);
 
   const home = state.home;
   const away = state.away;
@@ -606,11 +1207,12 @@ async function refresh() {
   renderDetails(state.game);
   renderHeaders(home, away);
   renderPeriods(state.periods, home, away);
+  renderComparison(home, away);
+  renderLineups(home, away);
+  applyMatchupTheme(home, away);
 
-  awayTable.innerHTML = "";
-  homeTable.innerHTML = "";
-  awayTable.appendChild(buildTable(away));
-  homeTable.appendChild(buildTable(home));
+  renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`);
+  renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`);
 }
 
 function startPolling() {
@@ -622,9 +1224,11 @@ function startPolling() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  setText(updatedEl, `Updated ${new Date().toLocaleTimeString()}`);
+  setUpdatedTime(new Date().toISOString());
   statusEl.textContent = "Connecting";
   renderFallback("Connecting to live data...");
+
+  hydrateFavorites();
 
   startPolling();
   setupScrollbars();
@@ -667,6 +1271,33 @@ window.addEventListener("DOMContentLoaded", () => {
   if (backBtn) {
     backBtn.addEventListener("click", () => {
       setSelectedGameId("");
+    });
+  }
+
+  if (periodsToggleBtn) {
+    const open = localStorage.getItem("nba-periods-open") === "1";
+    setPeriodsOpen(open);
+    periodsToggleBtn.addEventListener("click", () => {
+      const next = periodsEl && periodsEl.classList.contains("is-collapsed");
+      setPeriodsOpen(next);
+    });
+  }
+
+  if (comparisonToggleBtn) {
+    const open = localStorage.getItem("nba-comparison-open") === "1";
+    setComparisonOpen(open);
+    comparisonToggleBtn.addEventListener("click", () => {
+      const next = comparisonEl && comparisonEl.classList.contains("is-collapsed");
+      setComparisonOpen(next);
+    });
+  }
+
+  if (tableToggleBtn) {
+    const saved = localStorage.getItem("nba-table-view") || "compact";
+    setTableView(saved);
+    tableToggleBtn.addEventListener("click", () => {
+      const next = document.body.classList.contains("table-compact") ? "expanded" : "compact";
+      setTableView(next);
     });
   }
 
