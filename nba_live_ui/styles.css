@@ -19,6 +19,10 @@
   padding: 0;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   background: linear-gradient(160deg, #121827 0%, #0d111b 55%, #0a0d16 100%);
   color: var(--text);
@@ -592,6 +596,22 @@ body {
   text-align: right;
 }
 
+#away-card .team-header {
+  justify-content: flex-end;
+}
+
+#home-card {
+  text-align: left;
+}
+
+#home-card .team-header {
+  justify-content: flex-start;
+}
+
+#home-card .team-logo-wrap {
+  order: -1;
+}
+
 .team-name {
   font-size: 14px;
   color: var(--text-muted);
@@ -606,8 +626,8 @@ body {
   font-size: 30px;
   font-weight: 700;
   margin-top: 4px;
-  color: var(--team-color, var(--text));
-  text-shadow: 0 0 12px rgba(0, 0, 0, 0.3);
+  color: #ffffff;
+  text-shadow: none;
 }
 
 .team-record {

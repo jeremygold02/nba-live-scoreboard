@@ -332,11 +332,37 @@ function calcEfg(fgm, tpm, fga) {
 
 function renderTeamCard(container, team) {
   container.className = "team-card";
-  container.innerHTML = "";
-
   const color = getTeamColor(team.tricode);
   container.style.setProperty("--team-color", color);
   container.style.setProperty("--team-color-soft", toRgba(color, 0.35));
+  const teamKey = `${team.id || ""}-${team.tricode || ""}`;
+  if (teamKey && container.dataset.teamKey === teamKey && container.querySelector(".team-score")) {
+    const name = container.querySelector(".team-name");
+    if (name) {
+      name.textContent = team.city;
+    }
+    const title = container.querySelector(".team-title");
+    if (title) {
+      title.textContent = `${team.name} (${team.tricode})`;
+    }
+    const score = container.querySelector(".team-score");
+    if (score) {
+      score.textContent = team.score ?? "-";
+      animateScore(score, team);
+    }
+    const record = container.querySelector(".team-record");
+    if (record) {
+      record.textContent = formatRecord(team);
+    }
+    const fallback = container.querySelector(".team-logo-fallback");
+    if (fallback) {
+      fallback.textContent = team.tricode || "";
+    }
+    return;
+  }
+
+  container.dataset.teamKey = teamKey;
+  container.innerHTML = "";
 
   const header = document.createElement("div");
   header.className = "team-header";
@@ -692,11 +718,16 @@ function renderHeaders(home, away) {
 }
 
 function renderFallback(message) {
-  fallbackEl.textContent = message;
+  if (!fallbackEl) return;
+  const text = message ? String(message).trim() : "";
+  fallbackEl.textContent = text;
+  fallbackEl.hidden = !text;
 }
 
 function clearFallback() {
+  if (!fallbackEl) return;
   fallbackEl.textContent = "";
+  fallbackEl.hidden = true;
 }
 
 function renderPeriods(periods, home, away) {
