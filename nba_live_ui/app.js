@@ -507,14 +507,19 @@ function buildTable(team, showTotals, hidePoints) {
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
+  const onCourt = new Set((team.onCourt || []).map((value) => String(value)));
 
   team.players.forEach((player) => {
     const row = document.createElement("tr");
+    const personId = player.personId != null ? String(player.personId) : "";
     if (player.status && player.status !== "ACTIVE") {
       row.classList.add("player-inactive");
     }
     if (hasNotEntered(player.minutes)) {
       row.classList.add("player-dnp");
+    }
+    if (personId && onCourt.has(personId)) {
+      row.classList.add("player-on-court");
     }
 
     const nameCell = document.createElement("td");
@@ -634,7 +639,7 @@ function buildTable(team, showTotals, hidePoints) {
 
 function renderTeamTable(container, team, cacheKey, showTotals, hidePoints) {
   if (!container) return;
-  const hash = JSON.stringify({ players: team.players, stats: team.stats, showTotals, hidePoints });
+  const hash = JSON.stringify({ players: team.players, stats: team.stats, onCourt: team.onCourt, showTotals, hidePoints });
   const cached = tableCache.get(cacheKey);
   if (cached && cached.hash === hash) {
     return;
@@ -1347,7 +1352,7 @@ async function getState() {
   return {
     status: "error",
     updated: new Date().toISOString(),
-    error: "pywebview API not available. Run raptors_live.py.",
+    error: "pywebview API not available. Run nba_live.py.",
   };
 }
 
@@ -1477,7 +1482,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   if (zoomSelect) {
-    const savedZoom = localStorage.getItem("nba-zoom") || localStorage.getItem("raptors-zoom") || "1";
+    const savedZoom = localStorage.getItem("nba-zoom") || "1";
     zoomSelect.value = savedZoom;
     document.body.style.zoom = savedZoom;
     zoomSelect.addEventListener("change", () => {

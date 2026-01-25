@@ -987,6 +987,14 @@ body {
   opacity: 0.55;
 }
 
+.stats-table .player-on-court {
+  background: rgba(230, 195, 104, 0.08);
+}
+
+.stats-table .player-on-court .player-name strong {
+  color: var(--gold);
+}
+
 .stats-table .player-inactive .player-status,
 .stats-table .player-dnp .player-status {
   color: rgba(239, 157, 157, 0.7);

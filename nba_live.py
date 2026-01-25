@@ -8,22 +8,25 @@ from pathlib import Path
 from socketserver import TCPServer
 
 import webview
-from nba_api.live.nba.endpoints import scoreboard, boxscore
+from nba_api.live.nba.endpoints import scoreboard, boxscore, playbyplay
 
 REFRESH_SECONDS = 10
-LOG = logging.getLogger("raptors_live")
+LOG = logging.getLogger("nba_live")
 BOX_CACHE = {}
 BOX_BACKOFF = {}
 MAX_BACKOFF_SECONDS = 60
-FAVORITES_PATH = Path(__file__).resolve().parent / "raptors_live_ui" / "resources" / "favorites.json"
+PBP_BACKOFF = {}
+ON_COURT_CACHE = {}
+FAVORITES_PATH = Path(__file__).resolve().parent / "nba_live_ui" / "resources" / "favorites.json"
 
 
 def _now_utc_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _get_backoff(game_id):
-    entry = BOX_BACKOFF.get(game_id)
+def _get_backoff(game_id, backoff_map=None):
+    backoff_map = backoff_map or BOX_BACKOFF
+    entry = backoff_map.get(game_id)
     if not entry:
         return None
     if datetime.now(timezone.utc) >= entry["nextAllowed"]:
@@ -31,19 +34,21 @@ def _get_backoff(game_id):
     return entry
 
 
-def _set_backoff(game_id):
-    current = BOX_BACKOFF.get(game_id)
+def _set_backoff(game_id, backoff_map=None):
+    backoff_map = backoff_map or BOX_BACKOFF
+    current = backoff_map.get(game_id)
     delay = current["delay"] if current else 1
     delay = min(delay * 2, MAX_BACKOFF_SECONDS)
-    BOX_BACKOFF[game_id] = {
+    backoff_map[game_id] = {
         "delay": delay,
         "nextAllowed": datetime.now(timezone.utc) + timedelta(seconds=delay),
     }
 
 
-def _clear_backoff(game_id):
-    if game_id in BOX_BACKOFF:
-        del BOX_BACKOFF[game_id]
+def _clear_backoff(game_id, backoff_map=None):
+    backoff_map = backoff_map or BOX_BACKOFF
+    if game_id in backoff_map:
+        del backoff_map[game_id]
 
 
 def _load_favorites():
@@ -107,6 +112,85 @@ def _calc_efg(fgm, tpm, fga):
     if fga <= 0:
         return None
     return round(((fgm + 0.5 * tpm) / fga) * 100, 1)
+
+
+def _coerce_person_id(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _starter_ids(players):
+    starters = set()
+    for player in players:
+        if not player.get("position"):
+            continue
+        person_id = _coerce_person_id(player.get("personId"))
+        if person_id is not None:
+            starters.add(person_id)
+    return starters
+
+
+def _build_on_court(game_id, home, away):
+    if not game_id or not home or not away:
+        return None
+    home_players = home.get("players") or []
+    away_players = away.get("players") or []
+    if not home_players or not away_players:
+        return None
+
+    home_on = _starter_ids(home_players)
+    away_on = _starter_ids(away_players)
+
+    backoff = _get_backoff(game_id, PBP_BACKOFF)
+    cached = ON_COURT_CACHE.get(game_id)
+    if backoff and cached:
+        return cached
+
+    try:
+        payload = playbyplay.PlayByPlay(game_id).get_dict()
+        _clear_backoff(game_id, PBP_BACKOFF)
+    except Exception:
+        LOG.exception("playbyplay error")
+        _set_backoff(game_id, PBP_BACKOFF)
+        return cached
+
+    actions = (payload.get("game") or {}).get("actions") or []
+    if actions:
+        actions = sorted(actions, key=lambda item: item.get("actionNumber") or 0)
+
+        home_id = home.get("id")
+        away_id = away.get("id")
+        home_tricode = home.get("tricode")
+        away_tricode = away.get("tricode")
+
+        for action in actions:
+            if action.get("actionType") != "substitution":
+                continue
+            person_id = _coerce_person_id(action.get("personId"))
+            if person_id is None:
+                continue
+            team_id = action.get("teamId")
+            team_tricode = action.get("teamTricode")
+            if team_id == home_id or team_tricode == home_tricode:
+                target = home_on
+            elif team_id == away_id or team_tricode == away_tricode:
+                target = away_on
+            else:
+                continue
+            subtype = action.get("subType")
+            if subtype == "in":
+                target.add(person_id)
+            elif subtype == "out":
+                target.discard(person_id)
+
+    if not home_on and not away_on:
+        return cached
+
+    result = {"home": sorted(home_on), "away": sorted(away_on)}
+    ON_COURT_CACHE[game_id] = result
+    return result
 
 
 def _build_player(player, team_stats, team_minutes):
@@ -329,8 +413,8 @@ def build_state(game_id=None):
             "game": base_game,
             "games": summaries,
             "periods": [],
-            "home": {**home_fallback, "stats": {}, "players": []},
-            "away": {**away_fallback, "stats": {}, "players": []},
+            "home": {**home_fallback, "stats": {}, "players": [], "onCourt": []},
+            "away": {**away_fallback, "stats": {}, "players": [], "onCourt": []},
             "error": None,
         }
 
@@ -338,6 +422,15 @@ def build_state(game_id=None):
     backoff = _get_backoff(base_game["gameId"])
     if backoff and cache:
         LOG.info("backoff active for %s; using cached boxscore", base_game["gameId"])
+        home = cache.get("home", {**home_fallback, "stats": {}, "players": []})
+        away = cache.get("away", {**away_fallback, "stats": {}, "players": []})
+        on_court = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else None
+        if on_court:
+            home = {**home, "onCourt": on_court.get("home", [])}
+            away = {**away, "onCourt": on_court.get("away", [])}
+        else:
+            home = {**home, "onCourt": []}
+            away = {**away, "onCourt": []}
         return {
             "status": "ok",
             "updated": updated,
@@ -345,8 +438,8 @@ def build_state(game_id=None):
             "game": base_game,
             "games": summaries,
             "periods": cache.get("periods", []),
-            "home": cache.get("home", {**home_fallback, "stats": {}, "players": []}),
-            "away": cache.get("away", {**away_fallback, "stats": {}, "players": []}),
+            "home": home,
+            "away": away,
             "error": "Using cached data during API backoff.",
         }
 
@@ -362,6 +455,15 @@ def build_state(game_id=None):
         error = str(exc)
         _set_backoff(base_game["gameId"])
         if cache:
+            home = cache.get("home", {**home_fallback, "stats": {}, "players": []})
+            away = cache.get("away", {**away_fallback, "stats": {}, "players": []})
+            on_court = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else None
+            if on_court:
+                home = {**home, "onCourt": on_court.get("home", [])}
+                away = {**away, "onCourt": on_court.get("away", [])}
+            else:
+                home = {**home, "onCourt": []}
+                away = {**away, "onCourt": []}
             return {
                 "status": "ok",
                 "updated": updated,
@@ -369,8 +471,8 @@ def build_state(game_id=None):
                 "game": base_game,
                 "games": summaries,
                 "periods": cache.get("periods", []),
-                "home": cache.get("home", {**home_fallback, "stats": {}, "players": []}),
-                "away": cache.get("away", {**away_fallback, "stats": {}, "players": []}),
+                "home": home,
+                "away": away,
                 "error": "Using cached data after boxscore error.",
             }
 
@@ -410,6 +512,13 @@ def build_state(game_id=None):
             "periods": periods,
             "dataUpdated": updated,
         }
+    on_court = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else None
+    if on_court:
+        home = {**home, "onCourt": on_court.get("home", [])}
+        away = {**away, "onCourt": on_court.get("away", [])}
+    else:
+        home = {**home, "onCourt": []}
+        away = {**away, "onCourt": []}
     return {
         "status": "ok" if (home.get("players") or away.get("players")) else ("postgame" if game_status == 3 else "live_no_data"),
         "updated": updated,
@@ -467,7 +576,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(message)s",
     )
     root = Path(__file__).resolve().parent
-    ui_dir = root / "raptors_live_ui"
+    ui_dir = root / "nba_live_ui"
 
     api = RaptorsLiveAPI()
 
