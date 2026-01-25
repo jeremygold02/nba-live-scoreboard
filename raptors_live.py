@@ -232,8 +232,26 @@ def _summarize_game(game):
     }
 
 
+def _looks_like_tipoff(status_text):
+    if not status_text:
+        return False
+    text = str(status_text).strip()
+    if not text:
+        return False
+    if any(ch.isdigit() for ch in text) and ":" in text:
+        return True
+    lower = text.lower()
+    if " am" in lower or " pm" in lower:
+        return True
+    if any(zone in lower for zone in (" et", " ct", " mt", " pt")) and any(ch.isdigit() for ch in text):
+        return True
+    return False
+
+
 def _map_status(game_status, status_text):
     if game_status == 1:
+        if status_text and not _looks_like_tipoff(status_text):
+            return status_text
         return "Scheduled"
     if game_status == 2:
         return "Live"

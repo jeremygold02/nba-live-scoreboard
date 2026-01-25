@@ -76,11 +76,17 @@ body {
   border-color: rgba(255, 255, 255, 0.25);
 }
 
+.hero__toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .hero__controls {
   display: flex;
   align-items: center;
   gap: 10px;
   justify-self: end;
+  flex-wrap: wrap;
 }
 
 .zoom-control {
@@ -864,6 +870,15 @@ body {
 
 .table-card__body.is-hidden {
   display: none;
+}
+
+.table-placeholder {
+  padding: 18px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .scoreboard.is-collapsed + .tables .table-card__body,

@@ -2,6 +2,7 @@ const LIVE_REFRESH_MS = 10000;
 const IDLE_REFRESH_MS = 20000;
 let refreshTimer = null;
 let refreshIntervalMs = LIVE_REFRESH_MS;
+let isRefreshing = false;
 
 const updatedEl = document.getElementById("updated");
 const statusEl = document.getElementById("status");
@@ -35,8 +36,10 @@ const tableToggleBtn = document.getElementById("table-toggle");
 const fallbackEl = document.getElementById("fallback");
 const scoreboardEl = document.getElementById("scoreboard");
 const toggleBtn = document.getElementById("scoreboard-toggle");
+const refreshBtn = document.getElementById("refresh-now");
 const zoomSelect = document.getElementById("zoom-select");
 const appRoot = document.getElementById("app");
+const refreshLabel = refreshBtn ? refreshBtn.textContent : "Refresh";
 let activeCell = null;
 let selectedGameId = localStorage.getItem("nba-selected-game") || "";
 let lastUpdatedAt = null;
@@ -103,6 +106,29 @@ function formatRecord(team) {
     return `${team.wins}-${team.losses}`;
   }
   return "";
+}
+
+function getStatusCode(game) {
+  if (!game) return null;
+  const status = Number.isFinite(game.status) ? game.status : Number(game.status);
+  return Number.isNaN(status) ? null : status;
+}
+
+function isTimeStatusText(text) {
+  if (!text) return false;
+  const trimmed = String(text).trim();
+  if (!trimmed) return false;
+  if (/[0-9]/.test(trimmed) && /:/.test(trimmed)) return true;
+  if (/\b(am|pm)\b/i.test(trimmed)) return true;
+  if (/\b(et|ct|mt|pt)\b/i.test(trimmed) && /[0-9]/.test(trimmed)) return true;
+  return false;
+}
+
+function getNonTimeStatusText(text) {
+  if (!text) return "";
+  const trimmed = String(text).trim();
+  if (!trimmed || isTimeStatusText(trimmed)) return "";
+  return trimmed;
 }
 
 function formatStatLine(team) {
@@ -616,7 +642,12 @@ function renderTeamTable(container, team, cacheKey, showTotals, hidePoints) {
   container.innerHTML = "";
   const hasPlayers = Array.isArray(team.players) && team.players.length > 0;
   if (!hasPlayers) {
-    container.classList.add("is-hidden");
+    container.classList.remove("is-hidden");
+    const empty = document.createElement("div");
+    empty.className = "table-placeholder";
+    empty.textContent = "Box score pending.";
+    container.appendChild(empty);
+    tableCache.set(cacheKey, { hash });
     return;
   }
   container.classList.remove("is-hidden");
@@ -933,7 +964,7 @@ function setSelectedGameId(gameId) {
   refresh();
 }
 
-function fallbackForStatus(status) {
+function fallbackForStatus(status, statusText) {
   if (status === "select_game") {
     return "Select a game to view the live box score.";
   }
@@ -944,6 +975,20 @@ function fallbackForStatus(status) {
     return "No games on the schedule right now.";
   }
   if (status === "scheduled") {
+    const special = getNonTimeStatusText(statusText);
+    if (special) {
+      const lower = special.toLowerCase();
+      if (lower.includes("ppd") || lower.includes("postponed")) {
+        return "Game postponed. Updates will appear when it is rescheduled.";
+      }
+      if (lower.includes("delay")) {
+        return "Game delayed. Check back soon for updates.";
+      }
+      if (lower.includes("suspend")) {
+        return "Game suspended. Updates will resume when play restarts.";
+      }
+      return `${special}. Updates will appear when the game resumes.`;
+    }
     return "Tipoff hasn't happened yet. Live box score will appear once the game starts.";
   }
   if (status === "postgame") {
@@ -980,11 +1025,20 @@ function clearGameUI() {
 }
 
 function formatGameStatus(game) {
-  const status = Number.isFinite(game.status) ? game.status : Number(game.status);
-  if (status === 1) return "Scheduled";
+  const status = getStatusCode(game);
+  if (status === 1) {
+    const special = getNonTimeStatusText(game && game.statusText);
+    return special || "Scheduled";
+  }
   if (status === 2) return "Live <span class=\"status-live\">&#9679;</span>";
   if (status === 3) return "Final";
   return game.statusText || "Unknown";
+}
+
+function formatLivePhaseText(game, clockText) {
+  if (getStatusCode(game) !== 2) return "";
+  if (!shouldShowPhase(game, clockText)) return "";
+  return getNonTimeStatusText(game && game.statusText);
 }
 
 function formatTipoff(value) {
@@ -1089,7 +1143,7 @@ function renderGameList(games) {
       document.createTextNode(" @"),
     );
     awayLine.appendChild(awayLeft);
-    const statusCode = Number.isFinite(game.status) ? game.status : Number(game.status);
+    const statusCode = getStatusCode(game);
     const showScore = statusCode === 2 || statusCode === 3;
     if (showScore) {
       awayLine.appendChild(buildScoreBadge(away.score));
@@ -1117,7 +1171,8 @@ function renderGameList(games) {
     const tipoff = formatTipoff(game.startTimeUTC);
     const clock = formatClock(game.clock);
     const period = game.period ? `P${game.period}` : "";
-    meta.innerHTML = [statusHtml, clock, period, tipoff].filter(Boolean).join(" | ");
+    const phase = formatLivePhaseText(game, clock);
+    meta.innerHTML = [statusHtml, clock, period, phase, tipoff].filter(Boolean).join(" | ");
 
     button.append(title, meta);
     button.addEventListener("click", () => {
@@ -1242,11 +1297,11 @@ function maybeNotifyGameStart(games) {
 
   games.forEach((game) => {
     if (!isFavoriteGame(game)) return;
-    const status = formatGameStatus(game);
+    const statusCode = getStatusCode(game);
     const prevStatus = lastGameStatuses.get(game.gameId);
-    lastGameStatuses.set(game.gameId, status);
+    lastGameStatuses.set(game.gameId, statusCode);
 
-    if (prevStatus && prevStatus !== "Live" && status === "Live" && !notifiedGames.has(game.gameId)) {
+    if (prevStatus && prevStatus !== 2 && statusCode === 2 && !notifiedGames.has(game.gameId)) {
       const away = game.away || {};
       const home = game.home || {};
       const title = "Favorite game is live";
@@ -1296,77 +1351,95 @@ async function getState() {
   };
 }
 
-async function refresh() {
-  let state;
+async function refresh(options = {}) {
+  if (isRefreshing) {
+    return;
+  }
+  isRefreshing = true;
+  const manual = options && options.manual;
+  if (manual && refreshBtn) {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = "Refreshing...";
+  }
+
   try {
-    state = await getState();
-  } catch (err) {
-    statusEl.textContent = "error";
-    renderFallback(`API error: ${err}`);
-    return;
-  }
-
-  const isLive = state.status === "ok";
-  const nextInterval = isLive ? LIVE_REFRESH_MS : IDLE_REFRESH_MS;
-  if (nextInterval !== refreshIntervalMs) {
-    refreshIntervalMs = nextInterval;
-    if (refreshTimer) {
-      clearInterval(refreshTimer);
-      refreshTimer = setInterval(refresh, refreshIntervalMs);
+    let state;
+    try {
+      state = await getState();
+    } catch (err) {
+      statusEl.textContent = "error";
+      renderFallback(`API error: ${err}`);
+      return;
     }
-  }
 
-  setUpdatedTime(state.dataUpdated || state.updated);
-
-  if (state.games && gamesEl) {
-    renderGameList(state.games);
-  }
-  if (state.games) {
-    maybeNotifyGameStart(state.games);
-  }
-
-  if (state.status !== "ok" && state.status !== "scheduled" && state.status !== "postgame" && state.status !== "live_no_data") {
-    statusEl.textContent = state.status.replace(/_/g, " ");
-    renderFallback(state.error || fallbackForStatus(state.status));
-    if (state.status === "game_not_found") {
-      selectedGameId = "";
-      localStorage.removeItem("nba-selected-game");
-      showListView();
+    const isLive = state.status === "ok";
+    const nextInterval = isLive ? LIVE_REFRESH_MS : IDLE_REFRESH_MS;
+    if (nextInterval !== refreshIntervalMs) {
+      refreshIntervalMs = nextInterval;
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = setInterval(refresh, refreshIntervalMs);
+      }
     }
-    if (state.status === "select_game") {
-      showListView();
+
+    setUpdatedTime(state.dataUpdated || state.updated);
+
+    if (state.games && gamesEl) {
+      renderGameList(state.games);
     }
+    if (state.games) {
+      maybeNotifyGameStart(state.games);
+    }
+
+    if (state.status !== "ok" && state.status !== "scheduled" && state.status !== "postgame" && state.status !== "live_no_data") {
+      statusEl.textContent = state.status.replace(/_/g, " ");
+      renderFallback(state.error || fallbackForStatus(state.status, state.game && state.game.statusText));
+      if (state.status === "game_not_found") {
+        selectedGameId = "";
+        localStorage.removeItem("nba-selected-game");
+        showListView();
+      }
+      if (state.status === "select_game") {
+        showListView();
+      }
+      renderStatusRibbon(state);
+      clearGameUI();
+      return;
+    }
+
+    if (state.status === "scheduled" || state.status === "postgame" || state.status === "live_no_data") {
+      renderFallback(fallbackForStatus(state.status, state.game && state.game.statusText));
+    } else {
+      clearFallback();
+    }
+    statusEl.textContent = state.game.statusText || state.game.status;
+    showGameView();
     renderStatusRibbon(state);
-    clearGameUI();
-    return;
+
+    const home = state.home;
+    const away = state.away;
+
+    renderTeamCard(awayCard, away);
+    renderTeamCard(homeCard, home);
+    renderCenter(state.game);
+    renderDetails(state.game);
+    renderHeaders(home, away);
+    renderPeriods(state.periods, home, away);
+    renderComparison(home, away);
+    renderLineups(home, away, state.status === "ok");
+    applyMatchupTheme(home, away);
+
+    const showTotals = state.status === "ok";
+    const hidePoints = scoreboardEl && scoreboardEl.classList.contains("is-hidden");
+    renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints);
+    renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints);
+  } finally {
+    if (manual && refreshBtn) {
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = refreshLabel;
+    }
+    isRefreshing = false;
   }
-
-  if (state.status === "scheduled" || state.status === "postgame" || state.status === "live_no_data") {
-    renderFallback(fallbackForStatus(state.status));
-  } else {
-    clearFallback();
-  }
-  statusEl.textContent = state.game.statusText || state.game.status;
-  showGameView();
-  renderStatusRibbon(state);
-
-  const home = state.home;
-  const away = state.away;
-
-  renderTeamCard(awayCard, away);
-  renderTeamCard(homeCard, home);
-  renderCenter(state.game);
-  renderDetails(state.game);
-  renderHeaders(home, away);
-  renderPeriods(state.periods, home, away);
-  renderComparison(home, away);
-  renderLineups(home, away, state.status === "ok");
-  applyMatchupTheme(home, away);
-
-  const showTotals = state.status === "ok";
-  const hidePoints = scoreboardEl && scoreboardEl.classList.contains("is-hidden");
-  renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints);
-  renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints);
 }
 
 function startPolling() {
@@ -1375,6 +1448,14 @@ function startPolling() {
   }
   refresh();
   refreshTimer = setInterval(refresh, refreshIntervalMs);
+}
+
+function stopPolling() {
+  if (!refreshTimer) {
+    return;
+  }
+  clearInterval(refreshTimer);
+  refreshTimer = null;
 }
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -1387,6 +1468,14 @@ window.addEventListener("DOMContentLoaded", () => {
   startPolling();
   setupScrollbars();
 
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopPolling();
+    } else {
+      startPolling();
+    }
+  });
+
   if (zoomSelect) {
     const savedZoom = localStorage.getItem("nba-zoom") || localStorage.getItem("raptors-zoom") || "1";
     zoomSelect.value = savedZoom;
@@ -1398,15 +1487,26 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", () => {
+      refresh({ manual: true });
+    });
+  }
+
   if (toggleBtn && scoreboardEl) {
     const states = ["full", "compact", "hidden"];
-    let stateIndex = 2;
+    const savedView = localStorage.getItem("nba-scoreboard-view");
+    let stateIndex = states.indexOf(savedView);
+    if (stateIndex < 0) {
+      stateIndex = 2;
+    }
 
     const applyState = () => {
       const state = states[stateIndex];
       scoreboardEl.classList.toggle("is-collapsed", state === "compact");
       scoreboardEl.classList.toggle("is-hidden", state === "hidden");
       toggleBtn.textContent = `View: ${state[0].toUpperCase()}${state.slice(1)}`;
+      localStorage.setItem("nba-scoreboard-view", state);
     };
 
     applyState();
@@ -1447,7 +1547,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   if (tableToggleBtn) {
-    const saved = localStorage.getItem("nba-table-view") || "compact";
+    const saved = localStorage.getItem("nba-table-view") || "expanded";
     setTableView(saved);
     tableToggleBtn.addEventListener("click", () => {
       const next = document.body.classList.contains("table-compact") ? "expanded" : "compact";
