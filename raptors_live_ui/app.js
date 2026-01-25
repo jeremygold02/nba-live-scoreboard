@@ -1,5 +1,7 @@
-const REFRESH_MS = 15000;
+const LIVE_REFRESH_MS = 10000;
+const IDLE_REFRESH_MS = 20000;
 let refreshTimer = null;
+let refreshIntervalMs = LIVE_REFRESH_MS;
 
 const updatedEl = document.getElementById("updated");
 const statusEl = document.getElementById("status");
@@ -106,12 +108,31 @@ function formatRecord(team) {
 function formatStatLine(team) {
   if (!team || !team.stats) return "";
   const stats = team.stats;
+  const hasAny =
+    Number.isFinite(stats.fgm) ||
+    Number.isFinite(stats.fga) ||
+    Number.isFinite(stats.tpm) ||
+    Number.isFinite(stats.tpa) ||
+    Number.isFinite(stats.ftm) ||
+    Number.isFinite(stats.fta) ||
+    Number.isFinite(stats.rebounds) ||
+    Number.isFinite(stats.assists);
+  if (!hasAny) return "";
+  const safe = (value) => (Number.isFinite(value) ? value : 0);
   const ts = formatPct(stats.tsPct);
   const efg = formatPct(stats.efgPct);
-  const fgPct = formatShotPct(stats.fgm, stats.fga);
-  const tpPct = formatShotPct(stats.tpm, stats.tpa);
-  const ftPct = formatShotPct(stats.ftm, stats.fta);
-  return `${stats.fgm}-${stats.fga} FG (${fgPct}) | ${stats.tpm}-${stats.tpa} 3PT (${tpPct}) | ${stats.ftm}-${stats.fta} FT (${ftPct}) | ${stats.rebounds} REB | ${stats.assists} AST | ${ts} TS | ${efg} eFG`;
+  const fgm = safe(stats.fgm);
+  const fga = safe(stats.fga);
+  const tpm = safe(stats.tpm);
+  const tpa = safe(stats.tpa);
+  const ftm = safe(stats.ftm);
+  const fta = safe(stats.fta);
+  const fgPct = formatShotPct(fgm, fga);
+  const tpPct = formatShotPct(tpm, tpa);
+  const ftPct = formatShotPct(ftm, fta);
+  const rebounds = safe(stats.rebounds);
+  const assists = safe(stats.assists);
+  return `${fgm}-${fga} FG (${fgPct}) | ${tpm}-${tpa} 3PT (${tpPct}) | ${ftm}-${fta} FT (${ftPct}) | ${rebounds} REB | ${assists} AST | ${ts} TS | ${efg} eFG`;
 }
 
 function setText(el, text) {
@@ -266,6 +287,21 @@ function calcShotPct(made, attempted) {
     return null;
   }
   return (made / attempted) * 100;
+}
+
+function calcTrueShooting(points, fga, fta) {
+  const denom = 2 * (fga + 0.44 * fta);
+  if (!Number.isFinite(points) || !Number.isFinite(denom) || denom <= 0) {
+    return null;
+  }
+  return (points / denom) * 100;
+}
+
+function calcEfg(fgm, tpm, fga) {
+  if (!Number.isFinite(fga) || fga <= 0) {
+    return null;
+  }
+  return ((fgm + 0.5 * tpm) / fga) * 100;
 }
 
 function renderTeamCard(container, team) {
@@ -423,7 +459,7 @@ function renderDetails(game) {
   detailsEl.textContent = [arena, start].filter(Boolean).join(" | ");
 }
 
-function buildTable(team) {
+function buildTable(team, showTotals, hidePoints) {
   const wrapper = document.createElement("div");
   const table = document.createElement("table");
   table.className = "stats-table";
@@ -503,7 +539,43 @@ function buildTable(team) {
   });
 
   table.appendChild(tbody);
-  if (team.stats && team.stats.points !== undefined) {
+  if (showTotals && Array.isArray(team.players) && team.players.length > 0) {
+    const totals = team.players.reduce(
+      (acc, player) => {
+        acc.points += Number(player.points) || 0;
+        acc.rebounds += Number(player.rebounds) || 0;
+        acc.assists += Number(player.assists) || 0;
+        acc.steals += Number(player.steals) || 0;
+        acc.blocks += Number(player.blocks) || 0;
+        acc.turnovers += Number(player.turnovers) || 0;
+        acc.fouls += Number(player.fouls) || 0;
+        acc.fgm += Number(player.fgm) || 0;
+        acc.fga += Number(player.fga) || 0;
+        acc.tpm += Number(player.tpm) || 0;
+        acc.tpa += Number(player.tpa) || 0;
+        acc.ftm += Number(player.ftm) || 0;
+        acc.fta += Number(player.fta) || 0;
+        return acc;
+      },
+      {
+        points: 0,
+        rebounds: 0,
+        assists: 0,
+        steals: 0,
+        blocks: 0,
+        turnovers: 0,
+        fouls: 0,
+        fgm: 0,
+        fga: 0,
+        tpm: 0,
+        tpa: 0,
+        ftm: 0,
+        fta: 0,
+      },
+    );
+    const tsPct = calcTrueShooting(totals.points, totals.fga, totals.fta);
+    const efgPct = calcEfg(totals.fgm, totals.tpm, totals.fga);
+
     const tfoot = document.createElement("tfoot");
     const totalRow = document.createElement("tr");
     totalRow.className = "total-row";
@@ -513,18 +585,18 @@ function buildTable(team) {
     totalRow.appendChild(totalLabel);
 
     totalRow.appendChild(cell(""));
-    totalRow.appendChild(cell(team.stats.points));
-    totalRow.appendChild(cell(team.stats.rebounds));
-    totalRow.appendChild(cell(team.stats.assists));
-    totalRow.appendChild(cell(team.stats.steals));
-    totalRow.appendChild(cell(team.stats.blocks));
-    totalRow.appendChild(cell(team.stats.turnovers));
-    totalRow.appendChild(cell(team.stats.fouls));
-    totalRow.appendChild(cell(`${team.stats.fgm}-${team.stats.fga}`));
-    totalRow.appendChild(cell(`${team.stats.tpm}-${team.stats.tpa}`));
-    totalRow.appendChild(cell(`${team.stats.ftm}-${team.stats.fta}`));
-    totalRow.appendChild(cell(formatPct(team.stats.tsPct)));
-    totalRow.appendChild(cell(formatPct(team.stats.efgPct)));
+    totalRow.appendChild(cell(hidePoints ? "" : totals.points));
+    totalRow.appendChild(cell(totals.rebounds));
+    totalRow.appendChild(cell(totals.assists));
+    totalRow.appendChild(cell(totals.steals));
+    totalRow.appendChild(cell(totals.blocks));
+    totalRow.appendChild(cell(totals.turnovers));
+    totalRow.appendChild(cell(totals.fouls));
+    totalRow.appendChild(cell(`${totals.fgm}-${totals.fga}`));
+    totalRow.appendChild(cell(`${totals.tpm}-${totals.tpa}`));
+    totalRow.appendChild(cell(`${totals.ftm}-${totals.fta}`));
+    totalRow.appendChild(cell(formatPct(tsPct)));
+    totalRow.appendChild(cell(formatPct(efgPct)));
     totalRow.appendChild(cell(""));
 
     tfoot.appendChild(totalRow);
@@ -534,15 +606,21 @@ function buildTable(team) {
   return wrapper;
 }
 
-function renderTeamTable(container, team, cacheKey) {
+function renderTeamTable(container, team, cacheKey, showTotals, hidePoints) {
   if (!container) return;
-  const hash = JSON.stringify({ players: team.players, stats: team.stats });
+  const hash = JSON.stringify({ players: team.players, stats: team.stats, showTotals, hidePoints });
   const cached = tableCache.get(cacheKey);
   if (cached && cached.hash === hash) {
     return;
   }
   container.innerHTML = "";
-  container.appendChild(buildTable(team));
+  const hasPlayers = Array.isArray(team.players) && team.players.length > 0;
+  if (!hasPlayers) {
+    container.classList.add("is-hidden");
+    return;
+  }
+  container.classList.remove("is-hidden");
+  container.appendChild(buildTable(team, showTotals, hidePoints));
   tableCache.set(cacheKey, { hash });
 }
 
@@ -749,6 +827,14 @@ function renderComparison(home, away) {
         awayRatio = item.awayValue / total;
       }
     }
+    if (Number.isFinite(item.awayValue) && Number.isFinite(item.homeValue)) {
+      const favorAway = item.label === "TO" ? item.awayValue < item.homeValue : item.awayValue > item.homeValue;
+      if (favorAway) {
+        awayVal.classList.add("is-lead");
+      } else if (item.awayValue !== item.homeValue) {
+        homeVal.classList.add("is-lead");
+      }
+    }
     barFill.style.setProperty("--away-ratio", awayRatio);
 
     values.append(awayVal, bar, homeVal);
@@ -759,8 +845,14 @@ function renderComparison(home, away) {
   comparisonBodyEl.appendChild(rows);
 }
 
-function renderLineups(home, away) {
+function renderLineups(home, away, isLive) {
   if (!lineupsEl || !awayLineupEl || !homeLineupEl || !awayLineupTitleEl || !homeLineupTitleEl) return;
+  if (isLive) {
+    lineupsEl.classList.add("is-hidden");
+    awayLineupEl.innerHTML = "";
+    homeLineupEl.innerHTML = "";
+    return;
+  }
   const awayStarters = (away.players || []).filter((player) => player.starter).slice(0, 5);
   const homeStarters = (home.players || []).filter((player) => player.starter).slice(0, 5);
 
@@ -797,7 +889,9 @@ function buildLineupRow(player) {
   const meta = document.createElement("span");
   meta.className = "lineup-row__meta";
   const minutes = formatClock(player.minutes) || "0:00";
-  meta.textContent = `${player.position || "-"} | ${minutes}`;
+  const points = Number.isFinite(player.points) ? `${player.points} PTS` : "-- PTS";
+  const plusMinus = Number.isFinite(player.plusMinus) ? `+/- ${player.plusMinus}` : "";
+  meta.textContent = [player.position || "-", minutes, points, plusMinus].filter(Boolean).join(" | ");
 
   row.append(name, meta);
   return row;
@@ -888,7 +982,7 @@ function clearGameUI() {
 function formatGameStatus(game) {
   const status = Number.isFinite(game.status) ? game.status : Number(game.status);
   if (status === 1) return "Scheduled";
-  if (status === 2) return "Live";
+  if (status === 2) return "Live <span class=\"status-live\">&#9679;</span>";
   if (status === 3) return "Final";
   return game.statusText || "Unknown";
 }
@@ -899,7 +993,17 @@ function formatTipoff(value) {
   if (Number.isNaN(parsed.valueOf())) {
     return value;
   }
-  return parsed.toLocaleString();
+  const now = new Date();
+  const sameDay =
+    parsed.getFullYear() === now.getFullYear() &&
+    parsed.getMonth() === now.getMonth() &&
+    parsed.getDate() === now.getDate();
+  if (sameDay) {
+    return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  const dateText = parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+  const timeText = parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${dateText}, ${timeText}`;
 }
 
 function renderGameList(games) {
@@ -934,7 +1038,26 @@ function renderGameList(games) {
     return a.index - b.index;
   });
 
+  const hasFavorites = withIndex.some(({ game }) => isFavoriteGame(game));
+  let favoritesLabelShown = false;
+  let allLabelShown = false;
+
   withIndex.forEach(({ game }) => {
+    if (hasFavorites && isFavoriteGame(game) && !favoritesLabelShown) {
+      const label = document.createElement("div");
+      label.className = "game-list__section";
+      label.textContent = "Favorites";
+      gamesEl.appendChild(label);
+      favoritesLabelShown = true;
+    }
+    if (hasFavorites && !isFavoriteGame(game) && !allLabelShown) {
+      const label = document.createElement("div");
+      label.className = "game-list__section";
+      label.textContent = "All games";
+      gamesEl.appendChild(label);
+      allLabelShown = true;
+    }
+
     const button = document.createElement("button");
     button.type = "button";
     button.className = "game-item";
@@ -957,32 +1080,44 @@ function renderGameList(games) {
 
     const awayLine = document.createElement("div");
     awayLine.className = "game-item__teamline";
-    awayLine.append(
+    const awayLeft = document.createElement("div");
+    awayLeft.className = "game-item__teamline-left";
+    awayLeft.append(
       buildFavoriteButton(away.tricode),
       buildLogoBadge(away),
       document.createTextNode(`${away.city || ""} ${away.name || ""}`.trim()),
-      document.createTextNode(" vs"),
+      document.createTextNode(" @"),
     );
+    awayLine.appendChild(awayLeft);
+    const statusCode = Number.isFinite(game.status) ? game.status : Number(game.status);
+    const showScore = statusCode === 2 || statusCode === 3;
+    if (showScore) {
+      awayLine.appendChild(buildScoreBadge(away.score));
+    }
 
     const homeLine = document.createElement("div");
     homeLine.className = "game-item__teamline";
-    homeLine.append(
+    const homeLeft = document.createElement("div");
+    homeLeft.className = "game-item__teamline-left";
+    homeLeft.append(
       buildFavoriteButton(home.tricode),
       buildLogoBadge(home),
       document.createTextNode(`${home.city || ""} ${home.name || ""}`.trim()),
     );
+    homeLine.appendChild(homeLeft);
+    if (showScore) {
+      homeLine.appendChild(buildScoreBadge(home.score));
+    }
 
     title.append(awayLine, homeLine);
 
     const meta = document.createElement("div");
     meta.className = "game-item__meta";
-    const status = formatGameStatus(game);
+    const statusHtml = formatGameStatus(game);
     const tipoff = formatTipoff(game.startTimeUTC);
     const clock = formatClock(game.clock);
     const period = game.period ? `P${game.period}` : "";
-    const shouldShowScore = status === "Live" || status === "Final";
-    const score = shouldShowScore ? `${away.score ?? "-"} - ${home.score ?? "-"}` : "";
-    meta.textContent = [status, clock, period, tipoff, score].filter(Boolean).join(" | ");
+    meta.innerHTML = [statusHtml, clock, period, tipoff].filter(Boolean).join(" | ");
 
     button.append(title, meta);
     button.addEventListener("click", () => {
@@ -1023,6 +1158,13 @@ function buildLogoBadge(team) {
 
   wrap.appendChild(img);
   return wrap;
+}
+
+function buildScoreBadge(score) {
+  const badge = document.createElement("span");
+  badge.className = "game-item__score";
+  badge.textContent = Number.isFinite(score) ? score : score ?? "-";
+  return badge;
 }
 
 function buildFavoriteButton(tricode) {
@@ -1164,6 +1306,16 @@ async function refresh() {
     return;
   }
 
+  const isLive = state.status === "ok";
+  const nextInterval = isLive ? LIVE_REFRESH_MS : IDLE_REFRESH_MS;
+  if (nextInterval !== refreshIntervalMs) {
+    refreshIntervalMs = nextInterval;
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = setInterval(refresh, refreshIntervalMs);
+    }
+  }
+
   setUpdatedTime(state.dataUpdated || state.updated);
 
   if (state.games && gamesEl) {
@@ -1208,11 +1360,13 @@ async function refresh() {
   renderHeaders(home, away);
   renderPeriods(state.periods, home, away);
   renderComparison(home, away);
-  renderLineups(home, away);
+  renderLineups(home, away, state.status === "ok");
   applyMatchupTheme(home, away);
 
-  renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`);
-  renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`);
+  const showTotals = state.status === "ok";
+  const hidePoints = scoreboardEl && scoreboardEl.classList.contains("is-hidden");
+  renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints);
+  renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints);
 }
 
 function startPolling() {
@@ -1220,7 +1374,7 @@ function startPolling() {
     return;
   }
   refresh();
-  refreshTimer = setInterval(refresh, REFRESH_MS);
+  refreshTimer = setInterval(refresh, refreshIntervalMs);
 }
 
 window.addEventListener("DOMContentLoaded", () => {
