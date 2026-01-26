@@ -9,7 +9,6 @@ const statusEl = document.getElementById("status");
 const awayCard = document.getElementById("away-card");
 const homeCard = document.getElementById("home-card");
 const centerCard = document.getElementById("game-center");
-const statusRibbonEl = document.getElementById("status-ribbon");
 const detailsEl = document.getElementById("game-details");
 const periodsToggleBtn = document.getElementById("periods-toggle");
 const periodsEl = document.getElementById("periods");
@@ -50,6 +49,7 @@ const lastScores = new Map();
 const notifiedGames = new Set(loadNotifiedGames());
 const lastGameStatuses = new Map();
 const tableCache = new Map();
+const lastPlayerStats = new Map();
 const teamColors = {
   ATL: "#e03a3e",
   BOS: "#007a33",
@@ -431,7 +431,7 @@ function renderCenter(game) {
 
   const period = document.createElement("div");
   period.className = "game-period";
-  period.textContent = game.period ? `Period ${game.period}` : game.statusText;
+  period.textContent = formatPeriodText(game);
 
   if (shouldShowPhase(game, clockText)) {
     const phase = document.createElement("div");
@@ -442,6 +442,20 @@ function renderCenter(game) {
   }
 
   centerCard.append(status, clock, period);
+}
+
+function formatPeriodText(game) {
+  if (!game) return "";
+  const period = Number.isFinite(game.period) ? game.period : Number(game.period);
+  if (!Number.isFinite(period) || period <= 0) {
+    return game.statusText || "";
+  }
+  if (period <= 4) {
+    const suffix = period === 1 ? "st" : period === 2 ? "nd" : period === 3 ? "rd" : "th";
+    return `${period}${suffix} Quarter`;
+  }
+  const ot = period - 4;
+  return ot === 1 ? "OT" : `${ot}OT`;
 }
 
 function formatClock(value) {
@@ -511,7 +525,7 @@ function renderDetails(game) {
   detailsEl.textContent = [arena, start].filter(Boolean).join(" | ");
 }
 
-function buildTable(team, showTotals, hidePoints) {
+function buildTable(team, showTotals, hidePoints, targetRows, statsKey) {
   const wrapper = document.createElement("div");
   const table = document.createElement("table");
   table.className = "stats-table";
@@ -535,9 +549,14 @@ function buildTable(team, showTotals, hidePoints) {
   const tbody = document.createElement("tbody");
   const onCourt = new Set((team.onCourt || []).map((value) => String(value)));
 
+  const prevStatsMap = statsKey ? lastPlayerStats.get(statsKey) : null;
+  const nextStatsMap = statsKey ? new Map() : null;
+
   team.players.forEach((player) => {
     const row = document.createElement("tr");
-    const personId = player.personId != null ? String(player.personId) : "";
+    const personId = player.personId != null ? String(player.personId) : player.name || "";
+    const prevStats = prevStatsMap && personId ? prevStatsMap.get(personId) : null;
+    const currentStats = {};
     if (player.status && player.status !== "ACTIVE") {
       row.classList.add("player-inactive");
     }
@@ -556,7 +575,8 @@ function buildTable(team, showTotals, hidePoints) {
     nameText.textContent = player.name || "Unknown";
 
     const meta = document.createElement("span");
-    meta.textContent = `${player.position || "-"} ${player.jerseyNum || ""}`.trim();
+    const metaParts = [player.position, player.jerseyNum].filter(Boolean);
+    meta.textContent = metaParts.join(" ");
 
     nameWrap.append(nameText, meta);
 
@@ -578,24 +598,58 @@ function buildTable(team, showTotals, hidePoints) {
     row.appendChild(nameCell);
 
     row.appendChild(cell(formatClock(player.minutes) || "0:00"));
-    row.appendChild(cell(player.points));
-    row.appendChild(cell(player.rebounds));
-    row.appendChild(cell(player.assists));
-    row.appendChild(cell(player.steals));
-    row.appendChild(cell(player.blocks));
-    row.appendChild(cell(player.turnovers));
-    row.appendChild(cell(player.fouls));
-    row.appendChild(cell(`${player.fgm}-${player.fga}`));
-    row.appendChild(cell(`${player.tpm}-${player.tpa}`));
-    row.appendChild(cell(`${player.ftm}-${player.fta}`));
-    row.appendChild(cell(formatPct(player.tsPct)));
-    row.appendChild(cell(formatPct(player.efgPct)));
-    row.appendChild(cell(player.plusMinus));
+    row.appendChild(buildStatCell(player.points, prevStats, "points", currentStats));
+    row.appendChild(buildStatCell(player.rebounds, prevStats, "rebounds", currentStats));
+    row.appendChild(buildStatCell(player.assists, prevStats, "assists", currentStats));
+    row.appendChild(buildStatCell(player.steals, prevStats, "steals", currentStats));
+    row.appendChild(buildStatCell(player.blocks, prevStats, "blocks", currentStats));
+    row.appendChild(buildStatCell(player.turnovers, prevStats, "turnovers", currentStats));
+    row.appendChild(buildStatCell(player.fouls, prevStats, "fouls", currentStats));
+    const fgLine = `${player.fgm}-${player.fga}`;
+    const tpLine = `${player.tpm}-${player.tpa}`;
+    const ftLine = `${player.ftm}-${player.fta}`;
+    row.appendChild(buildStatCell(fgLine, prevStats, "fg", currentStats));
+    row.appendChild(buildStatCell(tpLine, prevStats, "tp", currentStats));
+    row.appendChild(buildStatCell(ftLine, prevStats, "ft", currentStats));
+    row.appendChild(buildStatCell(formatPct(player.tsPct), prevStats, "tsPct", currentStats, false));
+    row.appendChild(buildStatCell(formatPct(player.efgPct), prevStats, "efgPct", currentStats, false));
+    row.appendChild(buildStatCell(player.plusMinus, prevStats, "plusMinus", currentStats, false));
+
+    if (nextStatsMap && personId) {
+      nextStatsMap.set(personId, currentStats);
+    }
 
     tbody.appendChild(row);
   });
+  const padTarget = Number.isFinite(targetRows) ? Math.max(0, targetRows) : 0;
+  const padCount = Math.max(0, padTarget - team.players.length);
+  const spacer = "\u00A0";
+  for (let i = 0; i < padCount; i += 1) {
+    const row = document.createElement("tr");
+    row.className = "player-empty";
+    row.setAttribute("aria-hidden", "true");
+    const nameCell = document.createElement("td");
+    const nameWrap = document.createElement("div");
+    nameWrap.className = "player-name";
+    const nameText = document.createElement("strong");
+    nameText.textContent = spacer;
+    const nameMeta = document.createElement("span");
+    nameMeta.textContent = spacer;
+    nameWrap.append(nameText, nameMeta);
+    nameCell.appendChild(nameWrap);
+    row.appendChild(nameCell);
+    columns.forEach(() => {
+      const td = document.createElement("td");
+      td.textContent = spacer;
+      row.appendChild(td);
+    });
+    tbody.appendChild(row);
+  }
 
   table.appendChild(tbody);
+  if (nextStatsMap && statsKey) {
+    lastPlayerStats.set(statsKey, nextStatsMap);
+  }
   if (showTotals && Array.isArray(team.players) && team.players.length > 0) {
     const totals = team.players.reduce(
       (acc, player) => {
@@ -663,9 +717,16 @@ function buildTable(team, showTotals, hidePoints) {
   return wrapper;
 }
 
-function renderTeamTable(container, team, cacheKey, showTotals, hidePoints) {
+function renderTeamTable(container, team, cacheKey, showTotals, hidePoints, targetRows) {
   if (!container) return;
-  const hash = JSON.stringify({ players: team.players, stats: team.stats, onCourt: team.onCourt, showTotals, hidePoints });
+  const hash = JSON.stringify({
+    players: team.players,
+    stats: team.stats,
+    onCourt: team.onCourt,
+    showTotals,
+    hidePoints,
+    targetRows,
+  });
   const cached = tableCache.get(cacheKey);
   if (cached && cached.hash === hash) {
     return;
@@ -678,17 +739,38 @@ function renderTeamTable(container, team, cacheKey, showTotals, hidePoints) {
     empty.className = "table-placeholder";
     empty.textContent = "Box score pending.";
     container.appendChild(empty);
+    lastPlayerStats.delete(cacheKey);
     tableCache.set(cacheKey, { hash });
     return;
   }
   container.classList.remove("is-hidden");
-  container.appendChild(buildTable(team, showTotals, hidePoints));
+  const statsKey = cacheKey;
+  container.appendChild(buildTable(team, showTotals, hidePoints, targetRows, statsKey));
   tableCache.set(cacheKey, { hash });
 }
 
 function cell(value) {
   const td = document.createElement("td");
   td.textContent = value ?? "-";
+  return td;
+}
+
+function normalizeStatValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") {
+    return Number.isNaN(value) ? null : value;
+  }
+  return String(value);
+}
+
+function buildStatCell(value, prevStats, statKey, currentStats, allowBump = true) {
+  const td = cell(value);
+  const normalized = normalizeStatValue(value);
+  const hasPrev = prevStats && Object.prototype.hasOwnProperty.call(prevStats, statKey);
+  if (allowBump && hasPrev && prevStats[statKey] !== normalized) {
+    td.classList.add("stat-bump");
+  }
+  currentStats[statKey] = normalized;
   return td;
 }
 
@@ -974,6 +1056,7 @@ function showListView() {
   if (backBtn) {
     backBtn.disabled = true;
   }
+  clearMatchupTheme();
 }
 
 function showGameView() {
@@ -1299,31 +1382,29 @@ function isFavoriteGame(game) {
   return (away && favoriteTeams.has(away)) || (home && favoriteTeams.has(home));
 }
 
-function renderStatusRibbon(state) {
-  if (!statusRibbonEl || !state || !state.game) return;
-  let text = state.game.statusText || state.game.status;
-  if (state.status === "scheduled") {
-    text = state.game.statusText || "Scheduled";
-  } else if (state.status === "postgame") {
-    text = "Final - box score pending";
-  } else if (state.status === "live_no_data") {
-    text = "Live - box score loading";
-  }
-  if (!text) {
-    statusRibbonEl.textContent = "";
-    statusRibbonEl.classList.remove("is-visible");
-    return;
-  }
-  statusRibbonEl.textContent = text;
-  statusRibbonEl.classList.add("is-visible");
-}
-
 function applyMatchupTheme(home, away) {
   if (!gameViewEl) return;
   const homeColor = getTeamColor(home.tricode);
   const awayColor = getTeamColor(away.tricode);
-  gameViewEl.style.setProperty("--matchup-a", toRgba(awayColor, 0.18));
-  gameViewEl.style.setProperty("--matchup-b", toRgba(homeColor, 0.18));
+  const matchupA = toRgba(awayColor, 0.18);
+  const matchupB = toRgba(homeColor, 0.18);
+  gameViewEl.style.setProperty("--matchup-a", matchupA);
+  gameViewEl.style.setProperty("--matchup-b", matchupB);
+  if (document.body) {
+    document.body.style.setProperty("--matchup-a", matchupA);
+    document.body.style.setProperty("--matchup-b", matchupB);
+  }
+}
+
+function clearMatchupTheme() {
+  if (gameViewEl) {
+    gameViewEl.style.removeProperty("--matchup-a");
+    gameViewEl.style.removeProperty("--matchup-b");
+  }
+  if (document.body) {
+    document.body.style.removeProperty("--matchup-a");
+    document.body.style.removeProperty("--matchup-b");
+  }
 }
 
 function maybeNotifyGameStart(games) {
@@ -1383,7 +1464,7 @@ async function getState() {
   return {
     status: "error",
     updated: new Date().toISOString(),
-    error: "pywebview API not available. Run nba_live.py.",
+    error: "pywebview API not available. Run nba_live_scoreboard.py.",
   };
 }
 
@@ -1438,7 +1519,6 @@ async function refresh(options = {}) {
       if (state.status === "select_game") {
         showListView();
       }
-      renderStatusRibbon(state);
       clearGameUI();
       return;
     }
@@ -1450,8 +1530,6 @@ async function refresh(options = {}) {
     }
     statusEl.textContent = state.game.statusText || state.game.status;
     showGameView();
-    renderStatusRibbon(state);
-
     const home = state.home;
     const away = state.away;
 
@@ -1467,8 +1545,11 @@ async function refresh(options = {}) {
 
     const showTotals = state.status === "ok";
     const hidePoints = scoreboardEl && scoreboardEl.classList.contains("is-hidden");
-    renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints);
-    renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints);
+    const awayCount = Array.isArray(away.players) ? away.players.length : 0;
+    const homeCount = Array.isArray(home.players) ? home.players.length : 0;
+    const targetRows = Math.max(awayCount, homeCount);
+    renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints, targetRows);
+    renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints, targetRows);
   } finally {
     if (manual && refreshBtn) {
       refreshBtn.disabled = false;
@@ -1541,7 +1622,8 @@ window.addEventListener("DOMContentLoaded", () => {
       const state = states[stateIndex];
       scoreboardEl.classList.toggle("is-collapsed", state === "compact");
       scoreboardEl.classList.toggle("is-hidden", state === "hidden");
-      toggleBtn.textContent = `View: ${state[0].toUpperCase()}${state.slice(1)}`;
+      const label = state === "hidden" ? "No Spoilers" : `${state[0].toUpperCase()}${state.slice(1)}`;
+      toggleBtn.textContent = `View: ${label}`;
       localStorage.setItem("nba-scoreboard-view", state);
     };
 

@@ -11,13 +11,13 @@ import webview
 from nba_api.live.nba.endpoints import scoreboard, boxscore, playbyplay
 
 REFRESH_SECONDS = 10
-LOG = logging.getLogger("nba_live")
+LOG = logging.getLogger("nba_live_scoreboard")
 BOX_CACHE = {}
 BOX_BACKOFF = {}
 MAX_BACKOFF_SECONDS = 60
 PBP_BACKOFF = {}
 ON_COURT_CACHE = {}
-FAVORITES_PATH = Path(__file__).resolve().parent / "nba_live_ui" / "resources" / "favorites.json"
+FAVORITES_PATH = Path(__file__).resolve().parent / "nba_live_scoreboard_ui" / "resources" / "favorites.json"
 
 
 def _now_utc_iso():
@@ -576,7 +576,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(message)s",
     )
     root = Path(__file__).resolve().parent
-    ui_dir = root / "nba_live_ui"
+    ui_dir = root / "nba_live_scoreboard_ui"
 
     api = RaptorsLiveAPI()
 
@@ -660,7 +660,7 @@ if __name__ == "__main__":
 
     LOG.info("starting webview")
     window = webview.create_window(
-        "NBA Live Game Center",
+        "NBA Live Scoreboard",
         url=f"http://127.0.0.1:{port}/index.html",
         width=1280,
         height=800,
