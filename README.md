@@ -1,6 +1,6 @@
 # NBA Live Scoreboard
 
-NBA Live Scoreboard is a local desktop scoreboard that pulls live NBA data and renders a game center UI. It starts a lightweight local server and opens the interface in a pywebview window. You can also open the local URL in a browser once the app is running.
+NBA Live Scoreboard is a local desktop scoreboard that pulls live NBA data and renders a game center UI. It starts a lightweight local server and opens the interface in a pywebview window.
 
 ## Requirements
 - Python 3.x
@@ -19,13 +19,14 @@ python nba-live-scoreboard.py
 
 The app starts a local server on a random port and opens a window titled "NBA Live Scoreboard".
 For the best experience, run the app in fullscreen.
+This UI is designed for pywebview only; browser usage is not supported.
 
 ## Features
 ### Game list and navigation
 - Live game list with favorites pinned to the top and labeled sections for favorites and all games.
 - Each game card shows live status, tipoff time, clock, period, and live score badges.
 - Favorite any team with a heart toggle; favorites carry across sessions.
-- Selected game stays highlighted and is restored on next launch.
+- Selected game stays highlighted while the app is running.
 - Clear or back buttons return to the list without a full reload.
 
 ### Scoreboard and game header
@@ -54,9 +55,7 @@ For the best experience, run the app in fullscreen.
 - Scrollbars appear on interaction and fade when idle.
 
 ### Favorites and notifications
-- Favorites stored to `nba-live-scoreboard-ui/resources/favorites.json` when using pywebview.
-- Favorites also persist in localStorage for browser usage.
-- Optional browser notifications when favorite games go live.
+- Favorites stored to `nba-live-scoreboard-ui/resources/favorites.json`.
 
 ### Data and reliability
 - Uses `nba_api.live.nba.endpoints.scoreboard`, `boxscore`, and `playbyplay`.
@@ -73,16 +72,9 @@ For the best experience, run the app in fullscreen.
 - Quarters and Comparison: toggle visibility in the game view.
 - Refresh: force a manual update.
 
-## Local API
-- `GET /api/ping`: health check.
-- `GET /api/state?gameId=...`: current app state (games list, selected game data).
-- `GET /api/favorites`: favorite team tricodes.
-- `POST /api/favorites`: update favorites (JSON list).
-- `GET /api/log?msg=...`: client error logging.
-
 ## Persistence
 - Favorites are saved to `nba-live-scoreboard-ui/resources/favorites.json`.
-- UI preferences are stored in browser localStorage (view mode, table mode, zoom, selected game, etc.).
+- UI preferences are kept in memory for the current session.
 
 ## Project structure
 - `nba-live-scoreboard.py`: local server, NBA data fetch, caching/backoff, pywebview window.

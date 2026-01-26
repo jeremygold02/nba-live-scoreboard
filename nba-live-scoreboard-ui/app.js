@@ -3,6 +3,7 @@ const IDLE_REFRESH_MS = 20000;
 let refreshTimer = null;
 let refreshIntervalMs = LIVE_REFRESH_MS;
 let isRefreshing = false;
+let pywebviewReady = false;
 
 const updatedEl = document.getElementById("updated");
 const statusEl = document.getElementById("status");
@@ -41,17 +42,20 @@ const zoomSelect = document.getElementById("zoom-select");
 const appRoot = document.getElementById("app");
 const refreshLabel = refreshBtn ? refreshBtn.textContent : "Refresh";
 let activeCell = null;
-let selectedGameId = localStorage.getItem("nba-selected-game") || "";
+let selectedGameId = "";
 let lastUpdatedAt = null;
 let updatedTimer = null;
 let lastGames = [];
 const favoriteTeams = new Set();
 const lastScores = new Map();
-const notifiedGames = new Set(loadNotifiedGames());
-const lastGameStatuses = new Map();
 const tableCache = new Map();
 const lastPlayerStats = new Map();
 let statFlashEnabled = true;
+let scoreboardView = "hidden";
+let tableView = "expanded";
+let periodsOpen = false;
+let comparisonOpen = false;
+let zoomLevel = "1";
 const teamColors = {
   ATL: "#e03a3e",
   BOS: "#007a33",
@@ -217,18 +221,8 @@ function setUpdatedTime(value) {
   }
 }
 
-function loadFavoriteTeamsFromStorage() {
-  try {
-    const raw = localStorage.getItem("nba-favorite-teams");
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    return [];
-  }
-}
-
-function saveFavoriteTeamsToStorage() {
-  localStorage.setItem("nba-favorite-teams", JSON.stringify([...favoriteTeams]));
+function canUsePywebview() {
+  return Boolean(window.pywebview && window.pywebview.api && window.pywebview.api.get_state);
 }
 
 function toggleFavoriteTeam(tricode) {
@@ -240,41 +234,21 @@ function toggleFavoriteTeam(tricode) {
   }
   saveFavoriteTeams();
   renderGameList(lastGames);
-  if (favoriteTeams.size && window.Notification && Notification.permission === "default") {
-    Notification.requestPermission().catch(() => {});
-  }
 }
 
 async function getFavorites() {
   if (window.pywebview && window.pywebview.api && window.pywebview.api.get_favorites) {
     return window.pywebview.api.get_favorites();
   }
-  try {
-    const response = await fetch("/api/favorites", { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return response.json();
-  } catch (err) {
-    return loadFavoriteTeamsFromStorage();
-  }
+  return [];
 }
 
 async function saveFavoriteTeams() {
   const payload = [...favoriteTeams];
-  saveFavoriteTeamsToStorage();
   if (window.pywebview && window.pywebview.api && window.pywebview.api.set_favorites) {
     return window.pywebview.api.set_favorites(payload);
   }
-  try {
-    await fetch("/api/favorites", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (err) {
-    // Ignore save failures; localStorage will persist for this origin.
-  }
+  return null;
 }
 
 async function hydrateFavorites() {
@@ -282,20 +256,6 @@ async function hydrateFavorites() {
   favoriteTeams.clear();
   favorites.forEach((team) => favoriteTeams.add(team));
   renderGameList(lastGames);
-}
-
-function loadNotifiedGames() {
-  try {
-    const raw = localStorage.getItem("nba-notified-games");
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    return [];
-  }
-}
-
-function saveNotifiedGames() {
-  localStorage.setItem("nba-notified-games", JSON.stringify([...notifiedGames]));
 }
 
 function formatPct(value) {
@@ -781,7 +741,6 @@ function setStatFlash(enabled) {
   if (statFlashToggleBtn) {
     statFlashToggleBtn.textContent = statFlashEnabled ? "Stat Flash: On" : "Stat Flash: Off";
   }
-  localStorage.setItem("nba-stat-flash", statFlashEnabled ? "1" : "0");
 }
 
 function renderHeaders(home, away) {
@@ -877,16 +836,16 @@ function renderPeriods(periods, home, away) {
 
 function setPeriodsOpen(open) {
   if (!periodsEl || !periodsToggleBtn) return;
+  periodsOpen = Boolean(open);
   periodsEl.classList.toggle("is-collapsed", !open);
   periodsToggleBtn.textContent = open ? "Quarters: Hide" : "Quarters: Show";
-  localStorage.setItem("nba-periods-open", open ? "1" : "0");
 }
 
 function setComparisonOpen(open) {
   if (!comparisonEl || !comparisonToggleBtn) return;
+  comparisonOpen = Boolean(open);
   comparisonEl.classList.toggle("is-collapsed", !open);
   comparisonToggleBtn.textContent = open ? "Comparison: Hide" : "Comparison: Show";
-  localStorage.setItem("nba-comparison-open", open ? "1" : "0");
 }
 
 function renderComparison(home, away) {
@@ -1084,10 +1043,8 @@ function showGameView() {
 function setSelectedGameId(gameId) {
   selectedGameId = gameId || "";
   if (selectedGameId) {
-    localStorage.setItem("nba-selected-game", selectedGameId);
     showGameView();
   } else {
-    localStorage.removeItem("nba-selected-game");
     showListView();
   }
   refresh();
@@ -1417,59 +1374,18 @@ function clearMatchupTheme() {
   }
 }
 
-function maybeNotifyGameStart(games) {
-  if (!games || !games.length) return;
-  if (!("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
-
-  games.forEach((game) => {
-    if (!isFavoriteGame(game)) return;
-    const statusCode = getStatusCode(game);
-    const prevStatus = lastGameStatuses.get(game.gameId);
-    lastGameStatuses.set(game.gameId, statusCode);
-
-    if (prevStatus && prevStatus !== 2 && statusCode === 2 && !notifiedGames.has(game.gameId)) {
-      const away = game.away || {};
-      const home = game.home || {};
-      const title = "Favorite game is live";
-      const body = `${away.tricode || "--"} @ ${home.tricode || "--"} just started.`;
-      try {
-        new Notification(title, { body });
-        notifiedGames.add(game.gameId);
-        saveNotifiedGames();
-      } catch (err) {
-        // Ignore notification errors.
-      }
-    }
-  });
-}
-
 function setTableView(mode) {
   const compact = mode === "compact";
+  tableView = compact ? "compact" : "expanded";
   document.body.classList.toggle("table-compact", compact);
   if (tableToggleBtn) {
     tableToggleBtn.textContent = compact ? "Stats: Compact" : "Stats: Expanded";
   }
-  localStorage.setItem("nba-table-view", compact ? "compact" : "expanded");
 }
 
 async function getState() {
-  const query = selectedGameId ? `?gameId=${encodeURIComponent(selectedGameId)}` : "";
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.get_state) {
+  if (canUsePywebview()) {
     return window.pywebview.api.get_state(selectedGameId || null);
-  }
-  try {
-    const response = await fetch(`/api/state${query}`, { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return response.json();
-  } catch (err) {
-    return {
-      status: "error",
-      updated: new Date().toISOString(),
-      error: `API fetch failed: ${err}`,
-    };
   }
   return {
     status: "error",
@@ -1482,13 +1398,17 @@ async function refresh(options = {}) {
   if (isRefreshing) {
     return;
   }
+  if (!canUsePywebview()) {
+    statusEl.textContent = "Waiting";
+    renderFallback("Waiting for pywebview...");
+    return;
+  }
   isRefreshing = true;
   const manual = options && options.manual;
   if (manual && refreshBtn) {
     refreshBtn.disabled = true;
     refreshBtn.textContent = "Refreshing...";
   }
-
   try {
     let state;
     try {
@@ -1514,16 +1434,12 @@ async function refresh(options = {}) {
     if (state.games && gamesEl) {
       renderGameList(state.games);
     }
-    if (state.games) {
-      maybeNotifyGameStart(state.games);
-    }
 
     if (state.status !== "ok" && state.status !== "scheduled" && state.status !== "postgame" && state.status !== "live_no_data") {
       statusEl.textContent = state.status.replace(/_/g, " ");
       renderFallback(state.error || fallbackForStatus(state.status, state.game && state.game.statusText));
       if (state.status === "game_not_found") {
         selectedGameId = "";
-        localStorage.removeItem("nba-selected-game");
         showListView();
       }
       if (state.status === "select_game") {
@@ -1577,6 +1493,17 @@ function startPolling() {
   refreshTimer = setInterval(refresh, refreshIntervalMs);
 }
 
+function startPollingIfReady() {
+  if (!canUsePywebview()) {
+    return;
+  }
+  if (!pywebviewReady) {
+    pywebviewReady = true;
+    hydrateFavorites();
+  }
+  startPolling();
+}
+
 function stopPolling() {
   if (!refreshTimer) {
     return;
@@ -1587,30 +1514,26 @@ function stopPolling() {
 
 window.addEventListener("DOMContentLoaded", () => {
   setUpdatedTime(new Date().toISOString());
-  statusEl.textContent = "Connecting";
-  renderFallback("Connecting to live data...");
+  statusEl.textContent = "Waiting";
+  renderFallback("Waiting for pywebview...");
 
-  hydrateFavorites();
-
-  startPolling();
+  startPollingIfReady();
   setupScrollbars();
 
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopPolling();
     } else {
-      startPolling();
+      startPollingIfReady();
     }
   });
 
   if (zoomSelect) {
-    const savedZoom = localStorage.getItem("nba-zoom") || "1";
-    zoomSelect.value = savedZoom;
-    document.body.style.zoom = savedZoom;
+    zoomSelect.value = zoomLevel;
+    document.body.style.zoom = zoomLevel;
     zoomSelect.addEventListener("change", () => {
-      const value = zoomSelect.value || "1";
-      document.body.style.zoom = value;
-      localStorage.setItem("nba-zoom", value);
+      zoomLevel = zoomSelect.value || "1";
+      document.body.style.zoom = zoomLevel;
     });
   }
 
@@ -1622,19 +1545,18 @@ window.addEventListener("DOMContentLoaded", () => {
 
   if (toggleBtn && scoreboardEl) {
     const states = ["full", "compact", "hidden"];
-    const savedView = localStorage.getItem("nba-scoreboard-view");
-    let stateIndex = states.indexOf(savedView);
+    let stateIndex = states.indexOf(scoreboardView);
     if (stateIndex < 0) {
       stateIndex = 2;
     }
 
     const applyState = () => {
       const state = states[stateIndex];
+      scoreboardView = state;
       scoreboardEl.classList.toggle("is-collapsed", state === "compact");
       scoreboardEl.classList.toggle("is-hidden", state === "hidden");
       const label = state === "hidden" ? "No Spoilers" : `${state[0].toUpperCase()}${state.slice(1)}`;
       toggleBtn.textContent = `View: ${label}`;
-      localStorage.setItem("nba-scoreboard-view", state);
     };
 
     applyState();
@@ -1657,26 +1579,21 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   if (periodsToggleBtn) {
-    const open = localStorage.getItem("nba-periods-open") === "1";
-    setPeriodsOpen(open);
+    setPeriodsOpen(periodsOpen);
     periodsToggleBtn.addEventListener("click", () => {
-      const next = periodsEl && periodsEl.classList.contains("is-collapsed");
-      setPeriodsOpen(next);
+      setPeriodsOpen(!periodsOpen);
     });
   }
 
   if (comparisonToggleBtn) {
-    const open = localStorage.getItem("nba-comparison-open") === "1";
-    setComparisonOpen(open);
+    setComparisonOpen(comparisonOpen);
     comparisonToggleBtn.addEventListener("click", () => {
-      const next = comparisonEl && comparisonEl.classList.contains("is-collapsed");
-      setComparisonOpen(next);
+      setComparisonOpen(!comparisonOpen);
     });
   }
 
   if (tableToggleBtn) {
-    const saved = localStorage.getItem("nba-table-view") || "expanded";
-    setTableView(saved);
+    setTableView(tableView);
     tableToggleBtn.addEventListener("click", () => {
       const next = document.body.classList.contains("table-compact") ? "expanded" : "compact";
       setTableView(next);
@@ -1684,10 +1601,6 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   if (statFlashToggleBtn) {
-    const saved = localStorage.getItem("nba-stat-flash");
-    if (saved !== null) {
-      statFlashEnabled = saved !== "0";
-    }
     setStatFlash(statFlashEnabled);
     statFlashToggleBtn.addEventListener("click", () => {
       setStatFlash(!statFlashEnabled);
@@ -1707,7 +1620,7 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 window.addEventListener("pywebviewready", () => {
-  startPolling();
+  startPollingIfReady();
 });
 
 function setupScrollbars() {

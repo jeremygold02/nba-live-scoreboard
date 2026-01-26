@@ -104,13 +104,6 @@
       </section>
     </main>
 
-    <script>
-      fetch("/api/ping", { cache: "no-store" }).catch(() => {});
-      window.onerror = function (message, source, lineno, colno) {
-        const msg = encodeURIComponent(`${message} @ ${source}:${lineno}:${colno}`);
-        fetch(`/api/log?msg=${msg}`).catch(() => {});
-      };
-    </script>
     <script src="app.js"></script>
   </body>
 </html>
