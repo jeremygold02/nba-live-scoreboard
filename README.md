@@ -68,6 +68,7 @@ For the best experience, run the app in fullscreen.
 - Zoom: change UI scale from the header.
 - View: Full, Compact, or No Spoilers.
 - Stats: Expanded or Compact table view.
+- Stat flash: toggle per-stat change animation.
 - Back to games: return to the list without reloading.
 - Quarters and Comparison: toggle visibility in the game view.
 - Refresh: force a manual update.

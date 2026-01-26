@@ -32,6 +32,7 @@ const listViewEl = document.getElementById("list-view");
 const gameViewEl = document.getElementById("game-view");
 const backBtn = document.getElementById("back-to-list");
 const tableToggleBtn = document.getElementById("table-toggle");
+const statFlashToggleBtn = document.getElementById("stat-flash-toggle");
 const fallbackEl = document.getElementById("fallback");
 const scoreboardEl = document.getElementById("scoreboard");
 const toggleBtn = document.getElementById("scoreboard-toggle");
@@ -50,6 +51,7 @@ const notifiedGames = new Set(loadNotifiedGames());
 const lastGameStatuses = new Map();
 const tableCache = new Map();
 const lastPlayerStats = new Map();
+let statFlashEnabled = true;
 const teamColors = {
   ATL: "#e03a3e",
   BOS: "#007a33",
@@ -598,19 +600,19 @@ function buildTable(team, showTotals, hidePoints, targetRows, statsKey) {
     row.appendChild(nameCell);
 
     row.appendChild(cell(formatClock(player.minutes) || "0:00"));
-    row.appendChild(buildStatCell(player.points, prevStats, "points", currentStats));
-    row.appendChild(buildStatCell(player.rebounds, prevStats, "rebounds", currentStats));
-    row.appendChild(buildStatCell(player.assists, prevStats, "assists", currentStats));
-    row.appendChild(buildStatCell(player.steals, prevStats, "steals", currentStats));
-    row.appendChild(buildStatCell(player.blocks, prevStats, "blocks", currentStats));
-    row.appendChild(buildStatCell(player.turnovers, prevStats, "turnovers", currentStats));
-    row.appendChild(buildStatCell(player.fouls, prevStats, "fouls", currentStats));
+    row.appendChild(buildStatCell(player.points, prevStats, "points", currentStats, statFlashEnabled));
+    row.appendChild(buildStatCell(player.rebounds, prevStats, "rebounds", currentStats, statFlashEnabled));
+    row.appendChild(buildStatCell(player.assists, prevStats, "assists", currentStats, statFlashEnabled));
+    row.appendChild(buildStatCell(player.steals, prevStats, "steals", currentStats, statFlashEnabled));
+    row.appendChild(buildStatCell(player.blocks, prevStats, "blocks", currentStats, statFlashEnabled));
+    row.appendChild(buildStatCell(player.turnovers, prevStats, "turnovers", currentStats, statFlashEnabled));
+    row.appendChild(buildStatCell(player.fouls, prevStats, "fouls", currentStats, statFlashEnabled));
     const fgLine = `${player.fgm}-${player.fga}`;
     const tpLine = `${player.tpm}-${player.tpa}`;
     const ftLine = `${player.ftm}-${player.fta}`;
-    row.appendChild(buildStatCell(fgLine, prevStats, "fg", currentStats));
-    row.appendChild(buildStatCell(tpLine, prevStats, "tp", currentStats));
-    row.appendChild(buildStatCell(ftLine, prevStats, "ft", currentStats));
+    row.appendChild(buildStatCell(fgLine, prevStats, "fg", currentStats, statFlashEnabled));
+    row.appendChild(buildStatCell(tpLine, prevStats, "tp", currentStats, statFlashEnabled));
+    row.appendChild(buildStatCell(ftLine, prevStats, "ft", currentStats, statFlashEnabled));
     row.appendChild(buildStatCell(formatPct(player.tsPct), prevStats, "tsPct", currentStats, false));
     row.appendChild(buildStatCell(formatPct(player.efgPct), prevStats, "efgPct", currentStats, false));
     row.appendChild(buildStatCell(player.plusMinus, prevStats, "plusMinus", currentStats, false));
@@ -772,6 +774,14 @@ function buildStatCell(value, prevStats, statKey, currentStats, allowBump = true
   }
   currentStats[statKey] = normalized;
   return td;
+}
+
+function setStatFlash(enabled) {
+  statFlashEnabled = Boolean(enabled);
+  if (statFlashToggleBtn) {
+    statFlashToggleBtn.textContent = statFlashEnabled ? "Stat Flash: On" : "Stat Flash: Off";
+  }
+  localStorage.setItem("nba-stat-flash", statFlashEnabled ? "1" : "0");
 }
 
 function renderHeaders(home, away) {
@@ -1670,6 +1680,17 @@ window.addEventListener("DOMContentLoaded", () => {
     tableToggleBtn.addEventListener("click", () => {
       const next = document.body.classList.contains("table-compact") ? "expanded" : "compact";
       setTableView(next);
+    });
+  }
+
+  if (statFlashToggleBtn) {
+    const saved = localStorage.getItem("nba-stat-flash");
+    if (saved !== null) {
+      statFlashEnabled = saved !== "0";
+    }
+    setStatFlash(statFlashEnabled);
+    statFlashToggleBtn.addEventListener("click", () => {
+      setStatFlash(!statFlashEnabled);
     });
   }
 
