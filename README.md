@@ -14,7 +14,7 @@ pip install nba_api pywebview
 ```
 2. Run the app:
 ```bash
-python nba_live_scoreboard.py
+python nba-live-scoreboard.py
 ```
 
 The app starts a local server on a random port and opens a window titled "NBA Live Scoreboard".
@@ -54,7 +54,7 @@ For the best experience, run the app in fullscreen.
 - Scrollbars appear on interaction and fade when idle.
 
 ### Favorites and notifications
-- Favorites stored to `nba_live_scoreboard_ui/resources/favorites.json` when using pywebview.
+- Favorites stored to `nba-live-scoreboard-ui/resources/favorites.json` when using pywebview.
 - Favorites also persist in localStorage for browser usage.
 - Optional browser notifications when favorite games go live.
 
@@ -80,16 +80,16 @@ For the best experience, run the app in fullscreen.
 - `GET /api/log?msg=...`: client error logging.
 
 ## Persistence
-- Favorites are saved to `nba_live_scoreboard_ui/resources/favorites.json`.
+- Favorites are saved to `nba-live-scoreboard-ui/resources/favorites.json`.
 - UI preferences are stored in browser localStorage (view mode, table mode, zoom, selected game, etc.).
 
 ## Project structure
-- `nba_live_scoreboard.py`: local server, NBA data fetch, caching/backoff, pywebview window.
-- `nba_live_scoreboard_ui/`: front-end assets and UI.
-- `nba_live_scoreboard_ui/index.html`: layout and controls.
-- `nba_live_scoreboard_ui/app.js`: UI logic, polling, rendering.
-- `nba_live_scoreboard_ui/styles.css`: styling and animations.
-- `nba_live_scoreboard_ui/resources/logos/`: team logo SVGs.
+- `nba-live-scoreboard.py`: local server, NBA data fetch, caching/backoff, pywebview window.
+- `nba-live-scoreboard-ui/`: front-end assets and UI.
+- `nba-live-scoreboard-ui/index.html`: layout and controls.
+- `nba-live-scoreboard-ui/app.js`: UI logic, polling, rendering.
+- `nba-live-scoreboard-ui/styles.css`: styling and animations.
+- `nba-live-scoreboard-ui/resources/logos/`: team logo SVGs.
 
 ## Notes
 - On-court tracking is derived from play-by-play substitutions. If play-by-play is unavailable, the last known lineup is reused.

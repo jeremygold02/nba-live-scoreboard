@@ -1464,7 +1464,7 @@ async function getState() {
   return {
     status: "error",
     updated: new Date().toISOString(),
-    error: "pywebview API not available. Run nba_live_scoreboard.py.",
+    error: "pywebview API not available. Run nba-live-scoreboard.py.",
   };
 }
 

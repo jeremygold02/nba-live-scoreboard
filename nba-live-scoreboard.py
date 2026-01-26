@@ -17,7 +17,7 @@ BOX_BACKOFF = {}
 MAX_BACKOFF_SECONDS = 60
 PBP_BACKOFF = {}
 ON_COURT_CACHE = {}
-FAVORITES_PATH = Path(__file__).resolve().parent / "nba_live_scoreboard_ui" / "resources" / "favorites.json"
+FAVORITES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "favorites.json"
 
 
 def _now_utc_iso():
@@ -576,7 +576,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(message)s",
     )
     root = Path(__file__).resolve().parent
-    ui_dir = root / "nba_live_scoreboard_ui"
+    ui_dir = root / "nba-live-scoreboard-ui"
 
     api = RaptorsLiveAPI()
 
