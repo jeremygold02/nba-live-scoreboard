@@ -34,6 +34,7 @@ const gameViewEl = document.getElementById("game-view");
 const backBtn = document.getElementById("back-to-list");
 const tableToggleBtn = document.getElementById("table-toggle");
 const statFlashToggleBtn = document.getElementById("stat-flash-toggle");
+const notificationsToggleBtn = document.getElementById("notifications-toggle");
 const fallbackEl = document.getElementById("fallback");
 const scoreboardEl = document.getElementById("scoreboard");
 const toggleBtn = document.getElementById("scoreboard-toggle");
@@ -51,6 +52,7 @@ const lastScores = new Map();
 const tableCache = new Map();
 const lastPlayerStats = new Map();
 let statFlashEnabled = true;
+let notificationsEnabled = false;
 let scoreboardView = "hidden";
 let tableView = "expanded";
 let periodsOpen = false;
@@ -743,6 +745,13 @@ function setStatFlash(enabled) {
   }
 }
 
+function setNotifications(enabled) {
+  notificationsEnabled = Boolean(enabled);
+  if (notificationsToggleBtn) {
+    notificationsToggleBtn.textContent = notificationsEnabled ? "Notifications: On" : "Notifications: Off";
+  }
+}
+
 function renderHeaders(home, away) {
   awayHeader.innerHTML = "";
   homeHeader.innerHTML = "";
@@ -1383,9 +1392,14 @@ function setTableView(mode) {
   }
 }
 
+function getScoreboardView() {
+  return scoreboardView;
+}
+
 async function getState() {
   if (canUsePywebview()) {
-    return window.pywebview.api.get_state(selectedGameId || null);
+    const view = getScoreboardView();
+    return window.pywebview.api.get_state(selectedGameId || null, view, notificationsEnabled);
   }
   return {
     status: "error",
@@ -1604,6 +1618,13 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatFlash(statFlashEnabled);
     statFlashToggleBtn.addEventListener("click", () => {
       setStatFlash(!statFlashEnabled);
+    });
+  }
+
+  if (notificationsToggleBtn) {
+    setNotifications(notificationsEnabled);
+    notificationsToggleBtn.addEventListener("click", () => {
+      setNotifications(!notificationsEnabled);
     });
   }
 

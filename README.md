@@ -6,11 +6,12 @@ NBA Live Scoreboard is a local desktop scoreboard that pulls live NBA data and r
 - Python 3.x
 - `nba_api`
 - `pywebview`
+- `plyer`
 
 ## Quick start
 1. Install dependencies:
 ```bash
-pip install nba_api pywebview
+pip install nba_api pywebview plyer
 ```
 2. Run the app:
 ```bash
@@ -56,6 +57,8 @@ This UI is designed for pywebview only; browser usage is not supported.
 
 ### Favorites and notifications
 - Favorites stored to `nba-live-scoreboard-ui/resources/favorites.json`.
+- Desktop notifications (pywebview) for game start/period events via plyer.
+- Notifications can be toggled from the game view (default off).
 
 ### Data and reliability
 - Uses `nba_api.live.nba.endpoints.scoreboard`, `boxscore`, and `playbyplay`.
@@ -68,6 +71,7 @@ This UI is designed for pywebview only; browser usage is not supported.
 - View: Full, Compact, or No Spoilers.
 - Stats: Expanded or Compact table view.
 - Stat flash: toggle per-stat change animation.
+- Notifications: toggle desktop notifications (default off).
 - Back to games: return to the list without reloading.
 - Quarters and Comparison: toggle visibility in the game view.
 - Refresh: force a manual update.

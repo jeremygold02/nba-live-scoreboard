@@ -253,7 +253,8 @@ body {
 }
 
 #table-toggle,
-#stat-flash-toggle {
+#stat-flash-toggle,
+#notifications-toggle {
   background: transparent;
   border: 1px solid var(--line);
   color: var(--text);
@@ -265,6 +266,7 @@ body {
 
 #table-toggle:hover,
 #stat-flash-toggle:hover,
+#notifications-toggle:hover,
 #back-to-list:hover {
   border-color: rgba(255, 255, 255, 0.25);
 }

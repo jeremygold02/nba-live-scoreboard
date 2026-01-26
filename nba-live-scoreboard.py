@@ -10,6 +10,11 @@ from socketserver import TCPServer
 import webview
 from nba_api.live.nba.endpoints import scoreboard, boxscore, playbyplay
 
+try:
+    from plyer import notification as plyer_notification
+except Exception:
+    plyer_notification = None
+
 REFRESH_SECONDS = 10
 LOG = logging.getLogger("nba_live_scoreboard")
 BOX_CACHE = {}
@@ -119,6 +124,26 @@ def _coerce_person_id(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return None
 
 
 def _starter_ids(players):
@@ -344,6 +369,142 @@ def _map_status(game_status, status_text):
     return status_text or "Unknown"
 
 
+def _ordinal(value):
+    if value % 100 in (11, 12, 13):
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(value % 10, "th")
+    return f"{value}{suffix}"
+
+
+def _format_ot_label(period):
+    ot_number = period - 4
+    if ot_number <= 1:
+        return "OT"
+    return f"{ot_number}OT"
+
+
+def _format_period_start(period):
+    if period is None or period <= 0:
+        return None
+    if period <= 4:
+        return f"{_ordinal(period)} Quarter Started"
+    return f"{_format_ot_label(period)} Started"
+
+
+def _format_period_end(period):
+    if period is None or period <= 0:
+        return None
+    if period <= 4:
+        return f"{_ordinal(period)} Quarter Ended"
+    return f"{_format_ot_label(period)} Ended"
+
+
+def _normalize_view_mode(value):
+    if value in ("full", "compact", "hidden"):
+        return value
+    return None
+
+
+def _format_matchup_title(home, away):
+    away_code = (away.get("tricode") or "").strip()
+    home_code = (home.get("tricode") or "").strip()
+    if away_code and home_code:
+        return f"{away_code} @ {home_code}"
+    return "NBA Live Scoreboard"
+
+
+def _format_score_line(home, away):
+    away_code = (away.get("tricode") or "").strip()
+    home_code = (home.get("tricode") or "").strip()
+    away_score = away.get("score")
+    home_score = home.get("score")
+    away_text = str(away_score) if away_score is not None else "-"
+    home_text = str(home_score) if home_score is not None else "-"
+    if away_code and home_code:
+        return f"{away_code} {away_text} - {home_text} {home_code}"
+    return ""
+
+
+class GameEventNotifier:
+    def __init__(self):
+        self._last_state = {}
+        self._sent_events = {}
+
+    def _send(self, game_id, event_key, title, message):
+        if not plyer_notification:
+            return
+        sent = self._sent_events.setdefault(game_id, set())
+        if event_key in sent:
+            return
+        try:
+            plyer_notification.notify(
+                title=title,
+                message=message,
+                app_name="NBA Live Scoreboard",
+                timeout=6,
+            )
+            sent.add(event_key)
+        except Exception:
+            LOG.exception("notification error")
+
+    def maybe_notify(self, game_id, state, view_mode, enabled=True):
+        if not game_id or not state:
+            return
+        game = state.get("game") or {}
+        status = game.get("status")
+        period = _coerce_int(game.get("period"))
+
+        prev = self._last_state.get(game_id)
+        self._last_state[game_id] = {"status": status, "period": period}
+        if not prev:
+            return
+
+        if not enabled or not plyer_notification:
+            return
+
+        if status not in ("Live", "Final"):
+            return
+
+        prev_status = prev.get("status")
+        prev_period = prev.get("period")
+        period_bumped = bool(prev_period and period and period > prev_period)
+        events = []
+
+        if prev_status != "Live" and status == "Live":
+            events.append(("game_start", "Game Started"))
+
+        if period_bumped:
+            end_label = _format_period_end(prev_period)
+            if end_label:
+                events.append((f"period_end_{prev_period}", end_label))
+            if period and period > 1:
+                start_label = _format_period_start(period)
+                if start_label:
+                    events.append((f"period_start_{period}", start_label))
+
+        if prev_status == "Live" and status == "Final" and period and not period_bumped:
+            end_label = _format_period_end(period)
+            if end_label:
+                events.append((f"period_end_{period}", end_label))
+
+        if not events:
+            return
+
+        include_score = _normalize_view_mode(view_mode) in ("full", "compact")
+        home = state.get("home") or {}
+        away = state.get("away") or {}
+        title = _format_matchup_title(home, away)
+        score_line = _format_score_line(home, away)
+
+        for event_key, message in events:
+            if include_score and score_line:
+                body = f"{message} | {score_line}"
+            else:
+                body = message
+            self._send(game_id, event_key, title, body)
+
+
 def build_state(game_id=None):
     updated = _now_utc_iso()
     LOG.info("build_state start")
@@ -541,10 +702,21 @@ class RaptorsLiveAPI:
             "game": None,
         }
         self._favorites = _load_favorites()
+        self._notifier = GameEventNotifier()
+        self._view_mode = "hidden"
+        self._notifications_enabled = False
 
-    def get_state(self, game_id=None):
+    def get_state(self, game_id=None, view_mode=None, notifications_enabled=None):
         LOG.info("js->get_state called")
+        normalized_view = _normalize_view_mode(view_mode)
+        if normalized_view:
+            self._view_mode = normalized_view
+        normalized_notify = _coerce_bool(notifications_enabled)
+        if normalized_notify is not None:
+            self._notifications_enabled = normalized_notify
         state = build_state(game_id)
+        if game_id:
+            self._notifier.maybe_notify(game_id, state, self._view_mode, self._notifications_enabled)
         with self._lock:
             self._last_state = state
         LOG.info("js->get_state returning %s", state.get("status"))
@@ -610,7 +782,9 @@ if __name__ == "__main__":
                 LOG.info("http /api/state requested")
                 query = parse_qs(parsed.query)
                 game_id = (query.get("gameId") or [""])[0] or None
-                state = build_state(game_id)
+                view_mode = (query.get("view") or [""])[0] or None
+                notify = (query.get("notify") or [""])[0] or None
+                state = api.get_state(game_id, view_mode, notify)
                 payload = json.dumps(state).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
