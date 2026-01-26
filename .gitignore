@@ -1,3 +1,8 @@
 __pycache__/
 .idea/
 nba-live-scoreboard-ui/resources/favorites.json
+build/
+dist/
+*.exe
+*.bat
+*.spec
