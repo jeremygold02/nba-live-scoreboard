@@ -1,8 +1,12 @@
 const LIVE_REFRESH_MS = 10000;
 const IDLE_REFRESH_MS = 20000;
+const API_THROTTLE_MS = 5000;
 let refreshTimer = null;
 let refreshIntervalMs = LIVE_REFRESH_MS;
 let isRefreshing = false;
+let lastRefreshAt = 0;
+let refreshQueuedTimer = null;
+let refreshQueuedManual = false;
 let pywebviewReady = false;
 
 const updatedEl = document.getElementById("updated");
@@ -1050,13 +1054,14 @@ function showGameView() {
 }
 
 function setSelectedGameId(gameId) {
+  const wasEmpty = !selectedGameId;
   selectedGameId = gameId || "";
   if (selectedGameId) {
     showGameView();
   } else {
     showListView();
   }
-  refresh();
+  refresh({ bypassThrottle: wasEmpty && Boolean(selectedGameId) });
 }
 
 function fallbackForStatus(status, statusText) {
@@ -1408,6 +1413,20 @@ async function getState() {
   };
 }
 
+function queueRefresh(delay, manual) {
+  if (refreshQueuedTimer) {
+    refreshQueuedManual = refreshQueuedManual || manual;
+    return;
+  }
+  refreshQueuedManual = manual;
+  refreshQueuedTimer = setTimeout(() => {
+    refreshQueuedTimer = null;
+    const runManual = refreshQueuedManual;
+    refreshQueuedManual = false;
+    refresh({ manual: runManual });
+  }, Math.max(0, delay));
+}
+
 async function refresh(options = {}) {
   if (isRefreshing) {
     return;
@@ -1417,12 +1436,24 @@ async function refresh(options = {}) {
     renderFallback("Waiting for pywebview...");
     return;
   }
-  isRefreshing = true;
   const manual = options && options.manual;
+  const bypassThrottle = options && options.bypassThrottle;
+  const now = Date.now();
+  if (!bypassThrottle && lastRefreshAt && now - lastRefreshAt < API_THROTTLE_MS) {
+    queueRefresh(API_THROTTLE_MS - (now - lastRefreshAt), manual);
+    return;
+  }
+  isRefreshing = true;
+  if (refreshQueuedTimer) {
+    clearTimeout(refreshQueuedTimer);
+    refreshQueuedTimer = null;
+    refreshQueuedManual = false;
+  }
   if (manual && refreshBtn) {
     refreshBtn.disabled = true;
     refreshBtn.textContent = "Refreshing...";
   }
+  lastRefreshAt = Date.now();
   try {
     let state;
     try {
