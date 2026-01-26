@@ -6,3 +6,4 @@ dist/
 *.exe
 *.bat
 *.spec
+*.ico
