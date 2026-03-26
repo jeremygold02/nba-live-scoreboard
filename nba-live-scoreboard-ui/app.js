@@ -1160,6 +1160,120 @@ function formatTipoff(value) {
   return `${dateText}, ${timeText}`;
 }
 
+function getGameSectionKey(game) {
+  const status = getStatusCode(game);
+  if (status === 2) return "live";
+  if (status === 3) return "finished";
+  return "scheduled";
+}
+
+function getGameSectionTitle(sectionKey) {
+  if (sectionKey === "live") return "Live Games";
+  if (sectionKey === "finished") return "Finished Games";
+  return "Scheduled Games";
+}
+
+function formatSelectedGameLabel(game) {
+  const away = game && game.away ? game.away : {};
+  const home = game && game.home ? game.home : {};
+  return `${away.tricode || ""} @ ${home.tricode || ""}`.trim() || game.matchup || "Selected game";
+}
+
+function buildGameListItem(game) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "game-item";
+  button.dataset.gameId = game.gameId;
+  if (isFavoriteGame(game)) {
+    button.classList.add("game-item--favorite");
+  }
+
+  if (selectedGameId && game.gameId === selectedGameId) {
+    button.classList.add("is-selected");
+  }
+
+  const away = game.away || {};
+  const home = game.home || {};
+  const title = document.createElement("div");
+  title.className = "game-item__title";
+
+  const awayLine = document.createElement("div");
+  awayLine.className = "game-item__teamline";
+  const awayLeft = document.createElement("div");
+  awayLeft.className = "game-item__teamline-left";
+  awayLeft.append(
+    buildFavoriteButton(away.tricode),
+    buildLogoBadge(away),
+    document.createTextNode(`${away.city || ""} ${away.name || ""}`.trim()),
+    document.createTextNode(" @"),
+  );
+  awayLine.appendChild(awayLeft);
+  const statusCode = getStatusCode(game);
+  const showScore = statusCode === 2 || statusCode === 3;
+  if (showScore) {
+    awayLine.appendChild(buildScoreBadge(away.score));
+  }
+
+  const homeLine = document.createElement("div");
+  homeLine.className = "game-item__teamline";
+  const homeLeft = document.createElement("div");
+  homeLeft.className = "game-item__teamline-left";
+  homeLeft.append(
+    buildFavoriteButton(home.tricode),
+    buildLogoBadge(home),
+    document.createTextNode(`${home.city || ""} ${home.name || ""}`.trim()),
+  );
+  homeLine.appendChild(homeLeft);
+  if (showScore) {
+    homeLine.appendChild(buildScoreBadge(home.score));
+  }
+
+  title.append(awayLine, homeLine);
+
+  const meta = document.createElement("div");
+  meta.className = "game-item__meta";
+  const statusHtml = formatGameStatus(game);
+  const tipoff = formatTipoff(game.startTimeUTC);
+  const clock = formatClock(game.clock);
+  const period = game.period ? `P${game.period}` : "";
+  const phase = formatLivePhaseText(game, clock);
+  meta.innerHTML = [statusHtml, clock, period, phase, tipoff].filter(Boolean).join(" | ");
+
+  button.append(title, meta);
+  button.addEventListener("click", () => {
+    setSelectedGameId(game.gameId);
+  });
+
+  return button;
+}
+
+function buildGameListSection(titleText, games) {
+  const section = document.createElement("section");
+  section.className = "game-list__group";
+
+  const head = document.createElement("div");
+  head.className = "game-list__section-head";
+
+  const title = document.createElement("div");
+  title.className = "game-list__section";
+  title.textContent = titleText;
+
+  const count = document.createElement("div");
+  count.className = "game-list__count";
+  count.textContent = `${games.length} game${games.length === 1 ? "" : "s"}`;
+
+  head.append(title, count);
+
+  const grid = document.createElement("div");
+  grid.className = "game-list__section-grid";
+  games.forEach((game) => {
+    grid.appendChild(buildGameListItem(game));
+  });
+
+  section.append(head, grid);
+  return section;
+}
+
 function renderGameList(games) {
   if (!gamesEl) return;
   lastGames = games || [];
@@ -1183,104 +1297,33 @@ function renderGameList(games) {
   }
 
   let selectedLabel = "Select a game";
+  const favoriteGames = [];
+  const sectionOrder = ["live", "scheduled", "finished"];
+  const sectionGames = new Map(sectionOrder.map((key) => [key, []]));
 
-  const withIndex = games.map((game, index) => ({ game, index }));
-  withIndex.sort((a, b) => {
-    const aFav = isFavoriteGame(a.game);
-    const bFav = isFavoriteGame(b.game);
-    if (aFav !== bFav) return aFav ? -1 : 1;
-    return a.index - b.index;
-  });
-
-  const hasFavorites = withIndex.some(({ game }) => isFavoriteGame(game));
-  let favoritesLabelShown = false;
-  let allLabelShown = false;
-
-  withIndex.forEach(({ game }) => {
-    if (hasFavorites && isFavoriteGame(game) && !favoritesLabelShown) {
-      const label = document.createElement("div");
-      label.className = "game-list__section";
-      label.textContent = "Favorites";
-      gamesEl.appendChild(label);
-      favoritesLabelShown = true;
-    }
-    if (hasFavorites && !isFavoriteGame(game) && !allLabelShown) {
-      const label = document.createElement("div");
-      label.className = "game-list__section";
-      label.textContent = "All games";
-      gamesEl.appendChild(label);
-      allLabelShown = true;
-    }
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "game-item";
-    button.dataset.gameId = game.gameId;
-    if (isFavoriteGame(game)) {
-      button.classList.add("game-item--favorite");
-    }
-
+  games.forEach((game) => {
     if (selectedGameId && game.gameId === selectedGameId) {
-      button.classList.add("is-selected");
-      const away = game.away || {};
-      const home = game.home || {};
-      selectedLabel = `${away.tricode || ""} @ ${home.tricode || ""}`.trim() || game.matchup || "Selected game";
+      selectedLabel = formatSelectedGameLabel(game);
     }
-
-    const away = game.away || {};
-    const home = game.home || {};
-    const title = document.createElement("div");
-    title.className = "game-item__title";
-
-    const awayLine = document.createElement("div");
-    awayLine.className = "game-item__teamline";
-    const awayLeft = document.createElement("div");
-    awayLeft.className = "game-item__teamline-left";
-    awayLeft.append(
-      buildFavoriteButton(away.tricode),
-      buildLogoBadge(away),
-      document.createTextNode(`${away.city || ""} ${away.name || ""}`.trim()),
-      document.createTextNode(" @"),
-    );
-    awayLine.appendChild(awayLeft);
-    const statusCode = getStatusCode(game);
-    const showScore = statusCode === 2 || statusCode === 3;
-    if (showScore) {
-      awayLine.appendChild(buildScoreBadge(away.score));
+    if (isFavoriteGame(game)) {
+      favoriteGames.push(game);
+      return;
     }
-
-    const homeLine = document.createElement("div");
-    homeLine.className = "game-item__teamline";
-    const homeLeft = document.createElement("div");
-    homeLeft.className = "game-item__teamline-left";
-    homeLeft.append(
-      buildFavoriteButton(home.tricode),
-      buildLogoBadge(home),
-      document.createTextNode(`${home.city || ""} ${home.name || ""}`.trim()),
-    );
-    homeLine.appendChild(homeLeft);
-    if (showScore) {
-      homeLine.appendChild(buildScoreBadge(home.score));
-    }
-
-    title.append(awayLine, homeLine);
-
-    const meta = document.createElement("div");
-    meta.className = "game-item__meta";
-    const statusHtml = formatGameStatus(game);
-    const tipoff = formatTipoff(game.startTimeUTC);
-    const clock = formatClock(game.clock);
-    const period = game.period ? `P${game.period}` : "";
-    const phase = formatLivePhaseText(game, clock);
-    meta.innerHTML = [statusHtml, clock, period, phase, tipoff].filter(Boolean).join(" | ");
-
-    button.append(title, meta);
-    button.addEventListener("click", () => {
-      setSelectedGameId(game.gameId);
-    });
-
-    gamesEl.appendChild(button);
+    sectionGames.get(getGameSectionKey(game)).push(game);
   });
+
+  const fragment = document.createDocumentFragment();
+  if (favoriteGames.length) {
+    fragment.appendChild(buildGameListSection("Favorite Games", favoriteGames));
+  }
+
+  sectionOrder.forEach((sectionKey) => {
+    const gamesForSection = sectionGames.get(sectionKey);
+    if (!gamesForSection || !gamesForSection.length) return;
+    fragment.appendChild(buildGameListSection(getGameSectionTitle(sectionKey), gamesForSection));
+  });
+
+  gamesEl.appendChild(fragment);
 
   if (selectedGameEl) {
     selectedGameEl.textContent = selectedLabel;
