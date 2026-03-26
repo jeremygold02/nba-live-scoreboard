@@ -43,7 +43,8 @@ This UI is designed for pywebview only; browser usage is not supported.
 - Columns include MIN, PTS, REB, AST, STL, BLK, TO, PF, FG, 3PT, FT, TS%, eFG%, and +/-.
 - Compact stats mode hides STL, BLK, TO, PF, TS%, and eFG% for faster scanning.
 - Player rows show position and jersey number, plus starter and inactive indicators.
-- On-court players are highlighted using play-by-play substitution tracking.
+- On-court players are highlighted using play-by-play substitution tracking, with stronger row emphasis for live lineups.
+- Sortable player columns for PLAYER, MIN, PTS, REB, AST, STL, BLK, TO, PF, and +/-.
 - Stat changes flash per cell on update, excluding TS%, eFG%, and +/-.
 - Padding rows keep both team tables the same height.
 - Starters list appears pregame when starters are available.

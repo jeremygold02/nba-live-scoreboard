@@ -1131,6 +1131,34 @@ body {
   white-space: nowrap;
 }
 
+.stats-table__sort {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-transform: inherit;
+}
+
+.stats-table th:first-child .stats-table__sort {
+  justify-content: flex-start;
+}
+
+.stats-table__sort.is-active {
+  color: var(--gold);
+}
+
+.stats-table__sort-indicator {
+  width: 10px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
 .stats-table th:not(:last-child),
 .stats-table td:not(:last-child) {
   border-right: 1px solid rgba(255, 255, 255, 0.05);
@@ -1147,6 +1175,10 @@ body {
   width: 24%;
 }
 
+.stats-table tbody tr:nth-child(odd):not(.player-empty) {
+  background: rgba(255, 255, 255, 0.025);
+}
+
 .stats-table tbody tr:hover {
   background: rgba(255, 255, 255, 0.06);
 }
@@ -1158,7 +1190,8 @@ body {
 }
 
 .stats-table .player-on-court {
-  background: rgba(230, 195, 104, 0.08);
+  background: linear-gradient(90deg, rgba(230, 195, 104, 0.18), rgba(230, 195, 104, 0.05));
+  box-shadow: inset 3px 0 0 var(--gold);
 }
 
 .stats-table .player-on-court .player-name strong {
@@ -1221,6 +1254,7 @@ body {
 .total-row {
   font-weight: 700;
   color: var(--gold);
+  box-shadow: inset 0 1px 0 rgba(230, 195, 104, 0.18);
 }
 
 @keyframes scorePop {
