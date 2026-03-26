@@ -44,6 +44,28 @@
             <button id="clear-selection" type="button">Clear</button>
           </div>
         </div>
+        <div class="game-list__controls">
+          <div class="game-list__filters" id="game-filters">
+            <button class="game-filter is-active" data-filter="all" type="button">All</button>
+            <button class="game-filter" data-filter="favorites" type="button">Favorites</button>
+            <button class="game-filter" data-filter="live" type="button">Live</button>
+            <button class="game-filter" data-filter="scheduled" type="button">Scheduled</button>
+            <button class="game-filter" data-filter="finished" type="button">Finished</button>
+          </div>
+          <div class="game-list__tools">
+            <label class="game-list__sort">
+              Sort
+              <select id="game-sort">
+                <option value="importance">Importance</option>
+                <option value="tipoff">Tipoff</option>
+              </select>
+            </label>
+            <label class="game-list__search">
+              <span class="sr-only">Search teams</span>
+              <input id="game-search" type="search" placeholder="Search teams" autocomplete="off" />
+            </label>
+          </div>
+        </div>
         <div class="game-list__body" id="games"></div>
       </section>
       <section class="game-view" id="game-view" hidden>

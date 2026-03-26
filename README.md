@@ -24,8 +24,9 @@ This UI is designed for pywebview only; browser usage is not supported.
 
 ## Features
 ### Game list and navigation
-- Live game list with favorites pinned to the top and labeled sections for favorites and all games.
-- Each game card shows live status, tipoff time, clock, period, and live score badges.
+- Home page game list split into favorites, live, scheduled, and finished sections.
+- Filter buttons, team search, and importance/tipoff sorting for faster game selection.
+- Each game card shows clearer status chips for live/final/scheduled state, clock, period, and tipoff time.
 - Favorite any team with a heart toggle; favorites carry across sessions.
 - Selected game stays highlighted while the app is running.
 - Clear or back buttons return to the list without a full reload.

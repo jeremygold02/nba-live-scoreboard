@@ -30,6 +30,9 @@ const homeHeader = document.getElementById("home-header");
 const awayTable = document.getElementById("away-table");
 const homeTable = document.getElementById("home-table");
 const gamesEl = document.getElementById("games");
+const gameFiltersEl = document.getElementById("game-filters");
+const gameSearchInput = document.getElementById("game-search");
+const gameSortSelect = document.getElementById("game-sort");
 const selectedGameEl = document.getElementById("selected-game");
 const selectedGameViewEl = document.getElementById("selected-game-view");
 const clearSelectionBtn = document.getElementById("clear-selection");
@@ -56,6 +59,8 @@ const favoriteTeams = new Set();
 const lastScores = new Map();
 const tableCache = new Map();
 const lastPlayerStats = new Map();
+const gameItemNodes = new Map();
+const gameSectionNodes = new Map();
 let statFlashEnabled = true;
 let notificationsEnabled = false;
 let scoreboardView = "hidden";
@@ -63,6 +68,10 @@ let tableView = "expanded";
 let periodsOpen = false;
 let comparisonOpen = false;
 let zoomLevel = "1";
+let gameFilter = "all";
+let gameSearchQuery = "";
+let gameSearchTerm = "";
+let gameSort = "importance";
 let startupPromise = null;
 let startupHydrated = false;
 const teamColors = {
@@ -1281,15 +1290,159 @@ function formatSelectedGameLabel(game) {
   return `${away.tricode || ""} @ ${home.tricode || ""}`.trim() || game.matchup || "Selected game";
 }
 
+function getTipoffTimestamp(game) {
+  if (!game || !game.startTimeUTC) return Number.POSITIVE_INFINITY;
+  const parsed = Date.parse(game.startTimeUTC);
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+}
+
+function getGameImportanceRank(game) {
+  const sectionKey = getGameSectionKey(game);
+  const favorite = isFavoriteGame(game);
+  if (favorite && sectionKey === "live") return 0;
+  if (sectionKey === "live") return 1;
+  if (favorite && sectionKey === "scheduled") return 2;
+  if (sectionKey === "scheduled") return 3;
+  if (favorite && sectionKey === "finished") return 4;
+  return 5;
+}
+
+function matchesGameSearch(game) {
+  if (!gameSearchTerm) return true;
+  const away = game.away || {};
+  const home = game.home || {};
+  const haystack = [
+    game.matchup,
+    away.city,
+    away.name,
+    away.tricode,
+    home.city,
+    home.name,
+    home.tricode,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(gameSearchTerm);
+}
+
+function matchesGameFilter(game) {
+  if (gameFilter === "all") return true;
+  if (gameFilter === "favorites") return isFavoriteGame(game);
+  return getGameSectionKey(game) === gameFilter;
+}
+
+function sortGamesForList(games) {
+  const withIndex = games.map((game, index) => ({ game, index }));
+  withIndex.sort((a, b) => {
+    if (gameSort === "tipoff") {
+      const tipoffDiff = getTipoffTimestamp(a.game) - getTipoffTimestamp(b.game);
+      if (tipoffDiff !== 0) return tipoffDiff;
+      const importanceDiff = getGameImportanceRank(a.game) - getGameImportanceRank(b.game);
+      if (importanceDiff !== 0) return importanceDiff;
+      return a.index - b.index;
+    }
+
+    const importanceDiff = getGameImportanceRank(a.game) - getGameImportanceRank(b.game);
+    if (importanceDiff !== 0) return importanceDiff;
+    const tipoffDiff = getTipoffTimestamp(a.game) - getTipoffTimestamp(b.game);
+    if (tipoffDiff !== 0) return tipoffDiff;
+    return a.index - b.index;
+  });
+  return withIndex.map(({ game }) => game);
+}
+
+function buildMetaChip(text, variant = "") {
+  const chip = document.createElement("span");
+  chip.className = variant ? `game-chip game-chip--${variant}` : "game-chip";
+  chip.textContent = text;
+  return chip;
+}
+
+function formatPeriodChip(game) {
+  if (!game || !game.period) return "";
+  const period = Number.isFinite(game.period) ? game.period : Number(game.period);
+  if (!Number.isFinite(period) || period <= 0) return "";
+  if (period <= 4) return `Q${period}`;
+  const ot = period - 4;
+  return ot === 1 ? "OT" : `${ot}OT`;
+}
+
+function buildGameMeta(game) {
+  const meta = document.createElement("div");
+  meta.className = "game-item__meta";
+  const statusKey = getGameStatusKey(game);
+  meta.appendChild(buildMetaChip(getGameStatusLabel(game), statusKey));
+
+  const clock = formatClock(game.clock);
+  const phase = formatLivePhaseText(game, clock);
+  const period = formatPeriodChip(game);
+  const tipoff = formatTipoff(game.startTimeUTC);
+
+  if (clock) {
+    meta.appendChild(buildMetaChip(clock));
+  }
+  if (period) {
+    meta.appendChild(buildMetaChip(period));
+  }
+  if (phase) {
+    meta.appendChild(buildMetaChip(phase));
+  }
+  if (tipoff && statusKey !== "live") {
+    meta.appendChild(buildMetaChip(tipoff, "scheduled"));
+  }
+
+  return meta;
+}
+
+function getGameListItemHash(game) {
+  const away = game.away || {};
+  const home = game.home || {};
+  return JSON.stringify({
+    status: getGameStatusLabel(game),
+    statusKey: getGameStatusKey(game),
+    statusText: game.statusText || "",
+    clock: game.clock || "",
+    period: game.period || "",
+    startTimeUTC: game.startTimeUTC || "",
+    awayName: away.name || "",
+    awayCity: away.city || "",
+    awayTricode: away.tricode || "",
+    awayScore: away.score,
+    awayId: away.id || "",
+    homeName: home.name || "",
+    homeCity: home.city || "",
+    homeTricode: home.tricode || "",
+    homeScore: home.score,
+    homeId: home.id || "",
+    favorite: isFavoriteGame(game),
+    selected: selectedGameId && game.gameId === selectedGameId,
+  });
+}
+
 function buildGameListItem(game) {
-  const button = document.createElement("button");
-  button.type = "button";
+  let button = gameItemNodes.get(game.gameId);
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "game-item";
+    button.addEventListener("click", () => {
+      setSelectedGameId(button.dataset.gameId);
+    });
+    gameItemNodes.set(game.gameId, button);
+  }
+
+  button.dataset.gameId = game.gameId || "";
+  const renderHash = getGameListItemHash(game);
+  if (button.dataset.renderHash === renderHash) {
+    return button;
+  }
+
+  button.dataset.renderHash = renderHash;
   button.className = "game-item";
-  button.dataset.gameId = game.gameId;
   if (isFavoriteGame(game)) {
     button.classList.add("game-item--favorite");
   }
-
   if (selectedGameId && game.gameId === selectedGameId) {
     button.classList.add("is-selected");
   }
@@ -1331,82 +1484,100 @@ function buildGameListItem(game) {
   }
 
   title.append(awayLine, homeLine);
-
-  const meta = document.createElement("div");
-  meta.className = "game-item__meta";
-  const statusHtml = formatGameStatus(game);
-  const tipoff = formatTipoff(game.startTimeUTC);
-  const clock = formatClock(game.clock);
-  const period = game.period ? `P${game.period}` : "";
-  const phase = formatLivePhaseText(game, clock);
-  meta.innerHTML = [statusHtml, clock, period, phase, tipoff].filter(Boolean).join(" | ");
-
-  button.append(title, meta);
-  button.addEventListener("click", () => {
-    setSelectedGameId(game.gameId);
-  });
-
+  button.replaceChildren(title, buildGameMeta(game));
   return button;
 }
 
-function buildGameListSection(titleText, games) {
-  const section = document.createElement("section");
-  section.className = "game-list__group";
+function buildGameListSection(sectionKey, titleText, games) {
+  let section = gameSectionNodes.get(sectionKey);
+  if (!section) {
+    section = document.createElement("section");
+    section.className = "game-list__group";
 
-  const head = document.createElement("div");
-  head.className = "game-list__section-head";
+    const head = document.createElement("div");
+    head.className = "game-list__section-head";
 
-  const title = document.createElement("div");
-  title.className = "game-list__section";
-  title.textContent = titleText;
+    const title = document.createElement("div");
+    title.className = "game-list__section";
 
-  const count = document.createElement("div");
-  count.className = "game-list__count";
-  count.textContent = `${games.length} game${games.length === 1 ? "" : "s"}`;
+    const count = document.createElement("div");
+    count.className = "game-list__count";
 
-  head.append(title, count);
+    head.append(title, count);
 
-  const grid = document.createElement("div");
-  grid.className = "game-list__section-grid";
-  games.forEach((game) => {
-    grid.appendChild(buildGameListItem(game));
-  });
+    const grid = document.createElement("div");
+    grid.className = "game-list__section-grid";
 
-  section.append(head, grid);
+    section.append(head, grid);
+    gameSectionNodes.set(sectionKey, section);
+  }
+
+  const titleEl = section.querySelector(".game-list__section");
+  const countEl = section.querySelector(".game-list__count");
+  const gridEl = section.querySelector(".game-list__section-grid");
+
+  if (titleEl) {
+    titleEl.textContent = titleText;
+  }
+  if (countEl) {
+    countEl.textContent = `${games.length} game${games.length === 1 ? "" : "s"}`;
+  }
+  if (gridEl) {
+    gridEl.replaceChildren(...games.map((game) => buildGameListItem(game)));
+  }
+
   return section;
+}
+
+function getEmptyGameListMessage(hasGames) {
+  if (!hasGames) {
+    return "No NBA games are on today's board.";
+  }
+  if (gameSearchQuery) {
+    return `No games match "${gameSearchQuery}".`;
+  }
+  if (gameFilter === "favorites") {
+    return "No favorite games match the current filter.";
+  }
+  return "No games match the current filters.";
 }
 
 function renderGameList(games) {
   if (!gamesEl) return;
   lastGames = games || [];
-  gamesEl.innerHTML = "";
 
-  if (!games || !games.length) {
+  let selectedLabel = "Select a game";
+  const allGames = games || [];
+  allGames.forEach((game) => {
+    if (selectedGameId && game.gameId === selectedGameId) {
+      selectedLabel = formatSelectedGameLabel(game);
+    }
+  });
+
+  const visibleGames = sortGamesForList(allGames.filter((game) => matchesGameFilter(game) && matchesGameSearch(game)));
+
+  if (!visibleGames.length) {
     const empty = document.createElement("div");
     empty.className = "game-list__empty";
-    empty.textContent = "No games found.";
-    gamesEl.appendChild(empty);
+    empty.textContent = getEmptyGameListMessage(allGames.length > 0);
+    gamesEl.replaceChildren(empty);
     if (selectedGameEl) {
-      selectedGameEl.textContent = "No games today";
+      selectedGameEl.textContent = allGames.length ? selectedLabel : "No games today";
     }
     if (selectedGameViewEl) {
-      selectedGameViewEl.textContent = "No games today";
+      selectedGameViewEl.textContent = allGames.length ? selectedLabel : "No games today";
     }
     if (clearSelectionBtn) {
-      clearSelectionBtn.disabled = true;
+      clearSelectionBtn.disabled = !selectedGameId;
     }
     return;
   }
 
-  let selectedLabel = "Select a game";
   const favoriteGames = [];
   const sectionOrder = ["live", "scheduled", "finished"];
   const sectionGames = new Map(sectionOrder.map((key) => [key, []]));
 
-  games.forEach((game) => {
-    if (selectedGameId && game.gameId === selectedGameId) {
-      selectedLabel = formatSelectedGameLabel(game);
-    }
+  visibleGames.forEach((game) => {
     if (isFavoriteGame(game)) {
       favoriteGames.push(game);
       return;
@@ -1414,18 +1585,18 @@ function renderGameList(games) {
     sectionGames.get(getGameSectionKey(game)).push(game);
   });
 
-  const fragment = document.createDocumentFragment();
+  const sections = [];
   if (favoriteGames.length) {
-    fragment.appendChild(buildGameListSection("Favorite Games", favoriteGames));
+    sections.push(buildGameListSection("favorites", "Favorite Games", favoriteGames));
   }
 
   sectionOrder.forEach((sectionKey) => {
     const gamesForSection = sectionGames.get(sectionKey);
     if (!gamesForSection || !gamesForSection.length) return;
-    fragment.appendChild(buildGameListSection(getGameSectionTitle(sectionKey), gamesForSection));
+    sections.push(buildGameListSection(sectionKey, getGameSectionTitle(sectionKey), gamesForSection));
   });
 
-  gamesEl.appendChild(fragment);
+  gamesEl.replaceChildren(...sections);
 
   if (selectedGameEl) {
     selectedGameEl.textContent = selectedLabel;
@@ -1436,6 +1607,14 @@ function renderGameList(games) {
   if (clearSelectionBtn) {
     clearSelectionBtn.disabled = !selectedGameId;
   }
+}
+
+function updateGameFilterUI() {
+  if (!gameFiltersEl) return;
+  const buttons = gameFiltersEl.querySelectorAll("[data-filter]");
+  buttons.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.filter === gameFilter);
+  });
 }
 
 function buildLogoBadge(team) {
@@ -1752,6 +1931,13 @@ window.addEventListener("DOMContentLoaded", () => {
     zoomSelect.value = zoomLevel;
     document.body.style.zoom = zoomLevel;
   }
+  if (gameSortSelect) {
+    gameSortSelect.value = gameSort;
+  }
+  if (gameSearchInput) {
+    gameSearchInput.value = gameSearchQuery;
+  }
+  updateGameFilterUI();
 
   startPollingIfReady();
   setupScrollbars();
@@ -1775,6 +1961,31 @@ window.addEventListener("DOMContentLoaded", () => {
   if (refreshBtn) {
     refreshBtn.addEventListener("click", () => {
       refresh({ manual: true });
+    });
+  }
+
+  if (gameFiltersEl) {
+    gameFiltersEl.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-filter]");
+      if (!button) return;
+      gameFilter = button.dataset.filter || "all";
+      updateGameFilterUI();
+      renderGameList(lastGames);
+    });
+  }
+
+  if (gameSearchInput) {
+    gameSearchInput.addEventListener("input", () => {
+      gameSearchQuery = String(gameSearchInput.value || "").trim();
+      gameSearchTerm = gameSearchQuery.toLowerCase();
+      renderGameList(lastGames);
+    });
+  }
+
+  if (gameSortSelect) {
+    gameSortSelect.addEventListener("change", () => {
+      gameSort = gameSortSelect.value === "tipoff" ? "tipoff" : "importance";
+      renderGameList(lastGames);
     });
   }
 
