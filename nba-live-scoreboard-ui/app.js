@@ -63,7 +63,6 @@ const tableCache = new Map();
 const lastPlayerStats = new Map();
 const gameItemNodes = new Map();
 const gameSectionNodes = new Map();
-let currentTableState = null;
 let statFlashEnabled = true;
 let notificationsEnabled = false;
 let scoreboardView = "hidden";
@@ -75,8 +74,6 @@ let gameFilter = "all";
 let gameSearchQuery = "";
 let gameSearchTerm = "";
 let gameSort = "importance";
-let playerSortKey = "default";
-let playerSortDir = "desc";
 let startupPromise = null;
 let startupHydrated = false;
 const teamColors = {
@@ -128,19 +125,6 @@ const columns = [
   "eFG%",
   "+/-",
 ];
-
-const sortableColumnMap = {
-  PLAYER: "name",
-  MIN: "minutes",
-  PTS: "points",
-  REB: "rebounds",
-  AST: "assists",
-  STL: "steals",
-  BLK: "blocks",
-  TO: "turnovers",
-  PF: "fouls",
-  "+/-": "plusMinus",
-};
 
 function formatRecord(team) {
   if (!team) return "";
@@ -556,92 +540,6 @@ function hasNotEntered(minutesValue) {
   return false;
 }
 
-function parseMinutesForSort(value) {
-  if (!value) return 0;
-  const text = String(value).trim();
-  if (text === "0:00" || text === "0") return 0;
-  const isoMatch = text.match(/PT(\d+)M(\d+(?:\.\d+)?)S/);
-  if (isoMatch) {
-    return Number(isoMatch[1]) * 60 + Number(isoMatch[2]);
-  }
-  const clockMatch = text.match(/(\d+):(\d{2})/);
-  if (clockMatch) {
-    return Number(clockMatch[1]) * 60 + Number(clockMatch[2]);
-  }
-  const numeric = Number(text);
-  return Number.isFinite(numeric) ? numeric : 0;
-}
-
-function getPlayerSortValue(player, sortKey) {
-  if (!player) return null;
-  switch (sortKey) {
-    case "name":
-      return String(player.name || "").toLowerCase();
-    case "minutes":
-      return parseMinutesForSort(player.minutes);
-    case "points":
-      return Number(player.points) || 0;
-    case "rebounds":
-      return Number(player.rebounds) || 0;
-    case "assists":
-      return Number(player.assists) || 0;
-    case "steals":
-      return Number(player.steals) || 0;
-    case "blocks":
-      return Number(player.blocks) || 0;
-    case "turnovers":
-      return Number(player.turnovers) || 0;
-    case "fouls":
-      return Number(player.fouls) || 0;
-    case "plusMinus":
-      return Number(player.plusMinus) || 0;
-    default:
-      return null;
-  }
-}
-
-function sortPlayers(players) {
-  if (!Array.isArray(players) || !players.length || playerSortKey === "default") {
-    return players || [];
-  }
-  const direction = playerSortDir === "asc" ? 1 : -1;
-  return players
-    .map((player, index) => ({ player, index }))
-    .sort((a, b) => {
-      const aValue = getPlayerSortValue(a.player, playerSortKey);
-      const bValue = getPlayerSortValue(b.player, playerSortKey);
-      if (typeof aValue === "string" || typeof bValue === "string") {
-        const compare = String(aValue || "").localeCompare(String(bValue || ""));
-        if (compare !== 0) return compare * direction;
-        return a.index - b.index;
-      }
-      const diff = Number(aValue || 0) - Number(bValue || 0);
-      if (diff !== 0) return diff > 0 ? direction : -direction;
-      return a.index - b.index;
-    })
-    .map(({ player }) => player);
-}
-
-function getSortIndicator(sortKey) {
-  if (playerSortKey !== sortKey) return "";
-  return playerSortDir === "asc" ? "↑" : "↓";
-}
-
-function updatePlayerSort(sortKey) {
-  if (!sortKey) return;
-  if (playerSortKey !== sortKey) {
-    playerSortKey = sortKey;
-    playerSortDir = sortKey === "name" ? "asc" : "desc";
-  } else if (playerSortDir === "desc") {
-    playerSortDir = "asc";
-  } else {
-    playerSortKey = "default";
-    playerSortDir = "desc";
-  }
-  tableCache.clear();
-  rerenderCurrentTables();
-}
-
 function renderDetails(game) {
   let arena = "";
   if (game.arena) {
@@ -662,29 +560,6 @@ function renderDetails(game) {
   detailsEl.textContent = [arena, start].filter(Boolean).join(" | ");
 }
 
-function buildSortableHeader(label, sortKey) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "stats-table__sort";
-  if (playerSortKey === sortKey) {
-    button.classList.add("is-active");
-  }
-  button.addEventListener("click", () => {
-    updatePlayerSort(sortKey);
-  });
-
-  const text = document.createElement("span");
-  text.textContent = label;
-  button.appendChild(text);
-
-  const indicator = document.createElement("span");
-  indicator.className = "stats-table__sort-indicator";
-  indicator.textContent = getSortIndicator(sortKey);
-  button.appendChild(indicator);
-
-  return button;
-}
-
 function buildTable(team, showTotals, hidePoints, targetRows, statsKey) {
   const wrapper = document.createElement("div");
   const table = document.createElement("table");
@@ -694,22 +569,12 @@ function buildTable(team, showTotals, hidePoints, targetRows, statsKey) {
   const headRow = document.createElement("tr");
 
   const nameTh = document.createElement("th");
-  const nameSortKey = sortableColumnMap.PLAYER;
-  if (nameSortKey) {
-    nameTh.appendChild(buildSortableHeader("PLAYER", nameSortKey));
-  } else {
-    nameTh.textContent = "PLAYER";
-  }
+  nameTh.textContent = "PLAYER";
   headRow.appendChild(nameTh);
 
   columns.forEach((col) => {
     const th = document.createElement("th");
-    const sortKey = sortableColumnMap[col];
-    if (sortKey) {
-      th.appendChild(buildSortableHeader(col, sortKey));
-    } else {
-      th.textContent = col;
-    }
+    th.textContent = col;
     headRow.appendChild(th);
   });
 
@@ -718,12 +583,11 @@ function buildTable(team, showTotals, hidePoints, targetRows, statsKey) {
 
   const tbody = document.createElement("tbody");
   const onCourt = new Set((team.onCourt || []).map((value) => String(value)));
-  const sortedPlayers = sortPlayers(team.players);
 
   const prevStatsMap = statsKey ? lastPlayerStats.get(statsKey) : null;
   const nextStatsMap = statsKey ? new Map() : null;
 
-  sortedPlayers.forEach((player) => {
+  team.players.forEach((player) => {
     const row = document.createElement("tr");
     const personId = player.personId != null ? String(player.personId) : player.name || "";
     const prevStats = prevStatsMap && personId ? prevStatsMap.get(personId) : null;
@@ -897,8 +761,6 @@ function renderTeamTable(container, team, cacheKey, showTotals, hidePoints, targ
     showTotals,
     hidePoints,
     targetRows,
-    playerSortKey,
-    playerSortDir,
   });
   const cached = tableCache.get(cacheKey);
   if (cached && cached.hash === hash) {
@@ -920,13 +782,6 @@ function renderTeamTable(container, team, cacheKey, showTotals, hidePoints, targ
   const statsKey = cacheKey;
   container.appendChild(buildTable(team, showTotals, hidePoints, targetRows, statsKey));
   tableCache.set(cacheKey, { hash });
-}
-
-function rerenderCurrentTables() {
-  if (!currentTableState) return;
-  const { away, home, showTotals, hidePoints, targetRows } = currentTableState;
-  renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints, targetRows);
-  renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints, targetRows);
 }
 
 function cell(value) {
@@ -1383,7 +1238,6 @@ function clearGameUI() {
   homeHeader.innerHTML = "";
   awayTable.innerHTML = "";
   homeTable.innerHTML = "";
-  currentTableState = null;
 }
 
 function formatGameStatus(game) {
@@ -1884,14 +1738,6 @@ function setScoreboardView(mode) {
     const label = next === "hidden" ? "No Spoilers" : `${next[0].toUpperCase()}${next.slice(1)}`;
     toggleBtn.textContent = `View: ${label}`;
   }
-  if (currentTableState) {
-    currentTableState = {
-      ...currentTableState,
-      hidePoints: scoreboardEl && scoreboardEl.classList.contains("is-hidden"),
-    };
-    tableCache.clear();
-    rerenderCurrentTables();
-  }
 }
 
 function setTableView(mode) {
@@ -2218,13 +2064,6 @@ async function refreshDetail(options = {}) {
     const awayCount = Array.isArray(away.players) ? away.players.length : 0;
     const homeCount = Array.isArray(home.players) ? home.players.length : 0;
     const targetRows = Math.max(awayCount, homeCount);
-    currentTableState = {
-      away,
-      home,
-      showTotals,
-      hidePoints,
-      targetRows,
-    };
     renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints, targetRows);
     renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints, targetRows);
     const isLive = state.game && state.game.statusKey === "live";
