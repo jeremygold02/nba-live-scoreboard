@@ -359,8 +359,9 @@ body {
 
 .game-list__section-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  grid-template-columns: repeat(auto-fill, 290px);
   gap: 12px;
+  justify-content: start;
 }
 .game-item {
   text-align: left;
@@ -1142,5 +1143,11 @@ body.table-compact .stats-table td:nth-child(14) {
 
   .scoreboard__center {
     order: -1;
+  }
+}
+
+@media (max-width: 680px) {
+  .game-list__section-grid {
+    grid-template-columns: 1fr;
   }
 }
