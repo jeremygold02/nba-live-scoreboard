@@ -1,12 +1,14 @@
-const LIVE_REFRESH_MS = 10000;
-const IDLE_REFRESH_MS = 20000;
+const DETAIL_LIVE_REFRESH_MS = 10000;
+const DETAIL_IDLE_REFRESH_MS = 20000;
+const SCOREBOARD_LIVE_REFRESH_MS = 20000;
+const SCOREBOARD_IDLE_REFRESH_MS = 30000;
 const API_THROTTLE_MS = 5000;
-let refreshTimer = null;
-let refreshIntervalMs = LIVE_REFRESH_MS;
-let isRefreshing = false;
-let lastRefreshAt = 0;
-let refreshQueuedTimer = null;
-let refreshQueuedManual = false;
+let scoreboardRefreshTimer = null;
+let detailRefreshTimer = null;
+let isScoreboardRefreshing = false;
+let isDetailRefreshing = false;
+let lastScoreboardRefreshAt = 0;
+let lastDetailRefreshAt = 0;
 let pywebviewReady = false;
 
 const updatedEl = document.getElementById("updated");
@@ -1164,14 +1166,17 @@ function showGameView() {
 }
 
 function setSelectedGameId(gameId) {
-  const wasEmpty = !selectedGameId;
+  const previousGameId = selectedGameId;
   selectedGameId = gameId || "";
+  const changed = previousGameId !== selectedGameId;
+  renderGameList(lastGames);
   if (selectedGameId) {
     showGameView();
+    refreshDetail({ bypassThrottle: changed });
   } else {
     showListView();
+    clearDetailRefreshTimer();
   }
-  refresh({ bypassThrottle: wasEmpty && Boolean(selectedGameId) });
 }
 
 function fallbackForStatus(status, statusText) {
@@ -1748,7 +1753,23 @@ function getScoreboardView() {
   return scoreboardView;
 }
 
-async function getState() {
+async function getScoreboardState() {
+  if (canUsePywebview() && window.pywebview.api.get_scoreboard) {
+    const view = getScoreboardView();
+    return window.pywebview.api.get_scoreboard(selectedGameId || null, view, notificationsEnabled);
+  }
+  if (canUsePywebview()) {
+    const view = getScoreboardView();
+    return window.pywebview.api.get_state(null, view, notificationsEnabled);
+  }
+  return {
+    status: "error",
+    updated: new Date().toISOString(),
+    error: "pywebview API not available. Run nba-live-scoreboard.py.",
+  };
+}
+
+async function getDetailState() {
   if (canUsePywebview()) {
     const view = getScoreboardView();
     return window.pywebview.api.get_state(selectedGameId || null, view, notificationsEnabled);
@@ -1760,22 +1781,141 @@ async function getState() {
   };
 }
 
-function queueRefresh(delay, manual) {
-  if (refreshQueuedTimer) {
-    refreshQueuedManual = refreshQueuedManual || manual;
-    return;
-  }
-  refreshQueuedManual = manual;
-  refreshQueuedTimer = setTimeout(() => {
-    refreshQueuedTimer = null;
-    const runManual = refreshQueuedManual;
-    refreshQueuedManual = false;
-    refresh({ manual: runManual });
+function setRefreshButtonBusy(isBusy) {
+  if (!refreshBtn) return;
+  refreshBtn.disabled = Boolean(isBusy);
+  refreshBtn.textContent = isBusy ? "Refreshing..." : refreshLabel;
+}
+
+function clearScoreboardRefreshTimer() {
+  if (!scoreboardRefreshTimer) return;
+  clearTimeout(scoreboardRefreshTimer);
+  scoreboardRefreshTimer = null;
+}
+
+function clearDetailRefreshTimer() {
+  if (!detailRefreshTimer) return;
+  clearTimeout(detailRefreshTimer);
+  detailRefreshTimer = null;
+}
+
+function scheduleScoreboardRefresh(delay) {
+  clearScoreboardRefreshTimer();
+  if (document.hidden || !startupHydrated) return;
+  scoreboardRefreshTimer = setTimeout(() => {
+    scoreboardRefreshTimer = null;
+    refreshScoreboard();
   }, Math.max(0, delay));
 }
 
-async function refresh(options = {}) {
-  if (isRefreshing) {
+function scheduleDetailRefresh(delay) {
+  clearDetailRefreshTimer();
+  if (document.hidden || !startupHydrated || !selectedGameId) return;
+  detailRefreshTimer = setTimeout(() => {
+    detailRefreshTimer = null;
+    refreshDetail();
+  }, Math.max(0, delay));
+}
+
+function getVisibleGames() {
+  return sortGamesForList(lastGames.filter((game) => matchesGameFilter(game) && matchesGameSearch(game)));
+}
+
+function getGameById(gameId) {
+  return lastGames.find((game) => game.gameId === gameId) || null;
+}
+
+function moveSelectedGame(direction) {
+  const visibleGames = getVisibleGames();
+  if (!visibleGames.length) return;
+  const currentIndex = visibleGames.findIndex((game) => game.gameId === selectedGameId);
+  if (currentIndex < 0) {
+    const nextIndex = direction > 0 ? 0 : visibleGames.length - 1;
+    setSelectedGameId(visibleGames[nextIndex].gameId);
+    return;
+  }
+  const nextIndex = Math.min(visibleGames.length - 1, Math.max(0, currentIndex + direction));
+  if (nextIndex !== currentIndex) {
+    setSelectedGameId(visibleGames[nextIndex].gameId);
+  }
+}
+
+function toggleFavoriteForSelectedGame() {
+  const game = getGameById(selectedGameId);
+  if (!game) return;
+  const away = (game.away || {}).tricode;
+  const home = (game.home || {}).tricode;
+  if (home && favoriteTeams.has(home) && (!away || !favoriteTeams.has(away))) {
+    toggleFavoriteTeam(home);
+    return;
+  }
+  if (away && favoriteTeams.has(away) && (!home || !favoriteTeams.has(home))) {
+    toggleFavoriteTeam(away);
+    return;
+  }
+  if (home) {
+    toggleFavoriteTeam(home);
+    return;
+  }
+  if (away) {
+    toggleFavoriteTeam(away);
+  }
+}
+
+function shouldIgnoreShortcut(event) {
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+    return true;
+  }
+  const target = event.target;
+  if (!target) return false;
+  const tagName = target.tagName;
+  if (target.isContentEditable) return true;
+  return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT";
+}
+
+async function manualRefresh() {
+  setRefreshButtonBusy(true);
+  try {
+    await Promise.all([
+      refreshScoreboard({ bypassThrottle: true }),
+      selectedGameId ? refreshDetail({ bypassThrottle: true }) : Promise.resolve(),
+    ]);
+  } finally {
+    setRefreshButtonBusy(false);
+  }
+}
+
+function handleGlobalShortcut(event) {
+  if (shouldIgnoreShortcut(event)) return;
+  const key = String(event.key || "").toLowerCase();
+  if (key === "r") {
+    event.preventDefault();
+    manualRefresh();
+    return;
+  }
+  if (key === "escape" && selectedGameId) {
+    event.preventDefault();
+    setSelectedGameId("");
+    return;
+  }
+  if ((key === "arrowleft" || key === "arrowup") && getVisibleGames().length) {
+    event.preventDefault();
+    moveSelectedGame(-1);
+    return;
+  }
+  if ((key === "arrowright" || key === "arrowdown") && getVisibleGames().length) {
+    event.preventDefault();
+    moveSelectedGame(1);
+    return;
+  }
+  if (key === "f" && selectedGameId) {
+    event.preventDefault();
+    toggleFavoriteForSelectedGame();
+  }
+}
+
+async function refreshScoreboard(options = {}) {
+  if (isScoreboardRefreshing) {
     return;
   }
   if (!canUsePywebview()) {
@@ -1783,43 +1923,94 @@ async function refresh(options = {}) {
     renderFallback("Waiting for pywebview...");
     return;
   }
-  const manual = options && options.manual;
   const bypassThrottle = options && options.bypassThrottle;
   const now = Date.now();
-  if (!bypassThrottle && lastRefreshAt && now - lastRefreshAt < API_THROTTLE_MS) {
-    queueRefresh(API_THROTTLE_MS - (now - lastRefreshAt), manual);
+  if (!bypassThrottle && lastScoreboardRefreshAt && now - lastScoreboardRefreshAt < API_THROTTLE_MS) {
+    scheduleScoreboardRefresh(API_THROTTLE_MS - (now - lastScoreboardRefreshAt));
     return;
   }
-  isRefreshing = true;
-  if (refreshQueuedTimer) {
-    clearTimeout(refreshQueuedTimer);
-    refreshQueuedTimer = null;
-    refreshQueuedManual = false;
-  }
-  if (manual && refreshBtn) {
-    refreshBtn.disabled = true;
-    refreshBtn.textContent = "Refreshing...";
-  }
-  lastRefreshAt = Date.now();
+  isScoreboardRefreshing = true;
+  lastScoreboardRefreshAt = Date.now();
   try {
     let state;
     try {
-      state = await getState();
+      state = await getScoreboardState();
+    } catch (err) {
+      if (!selectedGameId) {
+        statusEl.textContent = "error";
+        renderFallback(`API error: ${err}`);
+      }
+      scheduleScoreboardRefresh(SCOREBOARD_IDLE_REFRESH_MS);
+      return;
+    }
+
+    if (state.games && gamesEl) {
+      renderGameList(state.games);
+      if (selectedGameId && !state.games.some((game) => game.gameId === selectedGameId)) {
+        setSelectedGameId("");
+        return;
+      }
+    }
+
+    if (!selectedGameId) {
+      setUpdatedTime(state.updated);
+      if (state.status === "no_games") {
+        statusEl.textContent = "No games";
+      } else if (state.hasLiveGames) {
+        statusEl.textContent = "Live games";
+      } else {
+        statusEl.textContent = "Today";
+      }
+    }
+
+    if (state.status === "no_games" && !selectedGameId) {
+      showListView();
+      clearGameUI();
+    }
+
+    if (state.status === "error") {
+      scheduleScoreboardRefresh(SCOREBOARD_IDLE_REFRESH_MS);
+      return;
+    }
+
+    const nextInterval = state.hasLiveGames ? SCOREBOARD_LIVE_REFRESH_MS : SCOREBOARD_IDLE_REFRESH_MS;
+    scheduleScoreboardRefresh(nextInterval);
+  } finally {
+    isScoreboardRefreshing = false;
+  }
+}
+
+async function refreshDetail(options = {}) {
+  if (!selectedGameId) {
+    clearDetailRefreshTimer();
+    return;
+  }
+  if (isDetailRefreshing) {
+    return;
+  }
+  if (!canUsePywebview()) {
+    statusEl.textContent = "Waiting";
+    renderFallback("Waiting for pywebview...");
+    return;
+  }
+  const bypassThrottle = options && options.bypassThrottle;
+  const now = Date.now();
+  if (!bypassThrottle && lastDetailRefreshAt && now - lastDetailRefreshAt < API_THROTTLE_MS) {
+    scheduleDetailRefresh(API_THROTTLE_MS - (now - lastDetailRefreshAt));
+    return;
+  }
+  isDetailRefreshing = true;
+  lastDetailRefreshAt = Date.now();
+  try {
+    let state;
+    try {
+      state = await getDetailState();
     } catch (err) {
       statusEl.textContent = "error";
       clearDataBanner();
       renderFallback(`API error: ${err}`);
+      scheduleDetailRefresh(DETAIL_IDLE_REFRESH_MS);
       return;
-    }
-
-    const isLive = state.status === "ok";
-    const nextInterval = isLive ? LIVE_REFRESH_MS : IDLE_REFRESH_MS;
-    if (nextInterval !== refreshIntervalMs) {
-      refreshIntervalMs = nextInterval;
-      if (refreshTimer) {
-        clearInterval(refreshTimer);
-        refreshTimer = setInterval(refresh, refreshIntervalMs);
-      }
     }
 
     setUpdatedTime(state.dataUpdated || state.updated);
@@ -1833,13 +2024,17 @@ async function refresh(options = {}) {
       clearDataBanner();
       renderFallback(state.error || fallbackForStatus(state.status, state.game && state.game.statusText));
       if (state.status === "game_not_found") {
-        selectedGameId = "";
-        showListView();
+        setSelectedGameId("");
       }
       if (state.status === "select_game") {
         showListView();
       }
       clearGameUI();
+      if (state.status === "error") {
+        scheduleDetailRefresh(DETAIL_IDLE_REFRESH_MS);
+      } else {
+        clearDetailRefreshTimer();
+      }
       return;
     }
 
@@ -1871,21 +2066,18 @@ async function refresh(options = {}) {
     const targetRows = Math.max(awayCount, homeCount);
     renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints, targetRows);
     renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints, targetRows);
+    const isLive = state.game && state.game.statusKey === "live";
+    scheduleDetailRefresh(isLive ? DETAIL_LIVE_REFRESH_MS : DETAIL_IDLE_REFRESH_MS);
   } finally {
-    if (manual && refreshBtn) {
-      refreshBtn.disabled = false;
-      refreshBtn.textContent = refreshLabel;
-    }
-    isRefreshing = false;
+    isDetailRefreshing = false;
   }
 }
 
 function startPolling() {
-  if (refreshTimer) {
-    return;
+  refreshScoreboard({ bypassThrottle: true });
+  if (selectedGameId) {
+    refreshDetail({ bypassThrottle: true });
   }
-  refresh();
-  refreshTimer = setInterval(refresh, refreshIntervalMs);
 }
 
 function startPollingIfReady() {
@@ -1912,11 +2104,8 @@ function startPollingIfReady() {
 }
 
 function stopPolling() {
-  if (!refreshTimer) {
-    return;
-  }
-  clearInterval(refreshTimer);
-  refreshTimer = null;
+  clearScoreboardRefreshTimer();
+  clearDetailRefreshTimer();
 }
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -1960,7 +2149,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   if (refreshBtn) {
     refreshBtn.addEventListener("click", () => {
-      refresh({ manual: true });
+      manualRefresh();
     });
   }
 
@@ -2051,6 +2240,8 @@ window.addEventListener("DOMContentLoaded", () => {
     appRoot.addEventListener("mouseover", handleTableHover);
     appRoot.addEventListener("mouseout", clearTableHover);
   }
+
+  document.addEventListener("keydown", handleGlobalShortcut);
 
   if (selectedGameId) {
     showGameView();

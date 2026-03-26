@@ -52,14 +52,15 @@ This UI is designed for pywebview only; browser usage is not supported.
 - View toggle cycles Full, Compact, and No Spoilers; default is No Spoilers.
 - No Spoilers hides the scoreboard and team total points in the box score.
 - Stats view toggle switches Expanded and Compact; default is Expanded.
-- Zoom control, manual refresh button, and auto refresh scheduling.
+- Zoom control, manual refresh button, and split list/detail auto refresh scheduling.
 - UI view, zoom, stat flash, and notification preferences persist across app launches.
+- Keyboard shortcuts: `R` refreshes, arrow keys cycle games, `Esc` returns to the list, and `F` toggles the selected matchup's primary favorite.
 - Row and column hover highlighting for quick reading.
 - Scrollbars appear on interaction and fade when idle.
 
 ### Favorites and notifications
 - Favorites stored to `nba-live-scoreboard-ui/resources/favorites.json`.
-- Desktop notifications (pywebview) for game start/period events via plyer.
+- Desktop notifications (pywebview) for game start, period changes on the selected game, close games, overtime, and finals via plyer.
 - Notifications can be toggled from the game view (default off).
 
 ### Data and reliability
