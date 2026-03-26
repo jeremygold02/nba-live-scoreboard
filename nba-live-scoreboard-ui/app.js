@@ -40,6 +40,7 @@ const tableToggleBtn = document.getElementById("table-toggle");
 const statFlashToggleBtn = document.getElementById("stat-flash-toggle");
 const notificationsToggleBtn = document.getElementById("notifications-toggle");
 const fallbackEl = document.getElementById("fallback");
+const dataBannerEl = document.getElementById("data-banner");
 const scoreboardEl = document.getElementById("scoreboard");
 const toggleBtn = document.getElementById("scoreboard-toggle");
 const refreshBtn = document.getElementById("refresh-now");
@@ -62,6 +63,8 @@ let tableView = "expanded";
 let periodsOpen = false;
 let comparisonOpen = false;
 let zoomLevel = "1";
+let startupPromise = null;
+let startupHydrated = false;
 const teamColors = {
   ATL: "#e03a3e",
   BOS: "#007a33",
@@ -120,10 +123,25 @@ function formatRecord(team) {
   return "";
 }
 
-function getStatusCode(game) {
-  if (!game) return null;
-  const status = Number.isFinite(game.status) ? game.status : Number(game.status);
-  return Number.isNaN(status) ? null : status;
+function getGameStatusKey(game) {
+  if (!game) return "scheduled";
+  const statusKey = String(game.statusKey || "").trim().toLowerCase();
+  if (statusKey === "live" || statusKey === "final" || statusKey === "scheduled") {
+    return statusKey;
+  }
+  const legacyStatus = Number.isFinite(game.status) ? game.status : Number(game.status);
+  if (legacyStatus === 2) return "live";
+  if (legacyStatus === 3) return "final";
+  return "scheduled";
+}
+
+function getGameStatusLabel(game) {
+  if (!game) return "Unknown";
+  if (game.status) return String(game.status);
+  const statusKey = getGameStatusKey(game);
+  if (statusKey === "live") return "Live";
+  if (statusKey === "final") return "Final";
+  return "Scheduled";
 }
 
 function isTimeStatusText(text) {
@@ -231,6 +249,21 @@ function canUsePywebview() {
   return Boolean(window.pywebview && window.pywebview.api && window.pywebview.api.get_state);
 }
 
+async function getPreferences() {
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.get_preferences) {
+    return window.pywebview.api.get_preferences();
+  }
+  return null;
+}
+
+async function saveUIPreferences() {
+  const payload = getUIPreferencesPayload();
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.set_preferences) {
+    return window.pywebview.api.set_preferences(payload);
+  }
+  return null;
+}
+
 function toggleFavoriteTeam(tricode) {
   if (!tricode) return;
   if (favoriteTeams.has(tricode)) {
@@ -262,6 +295,29 @@ async function hydrateFavorites() {
   favoriteTeams.clear();
   favorites.forEach((team) => favoriteTeams.add(team));
   renderGameList(lastGames);
+}
+
+async function hydratePreferences() {
+  const preferences = await getPreferences();
+  if (!preferences) return;
+  if (preferences.scoreboardView) {
+    setScoreboardView(preferences.scoreboardView);
+  }
+  if (preferences.tableView) {
+    setTableView(preferences.tableView);
+  }
+  if (Object.prototype.hasOwnProperty.call(preferences, "statFlashEnabled")) {
+    setStatFlash(preferences.statFlashEnabled);
+  }
+  if (Object.prototype.hasOwnProperty.call(preferences, "notificationsEnabled")) {
+    setNotifications(preferences.notificationsEnabled);
+  }
+  const nextZoom = String(preferences.zoomLevel || "1");
+  zoomLevel = nextZoom;
+  if (zoomSelect) {
+    zoomSelect.value = nextZoom;
+  }
+  document.body.style.zoom = nextZoom;
 }
 
 function formatPct(value) {
@@ -390,7 +446,7 @@ function renderCenter(game) {
 
   const status = document.createElement("div");
   status.className = "game-status";
-  status.textContent = game.status;
+  status.textContent = getGameStatusLabel(game);
 
   const clock = document.createElement("div");
   clock.className = "game-clock";
@@ -756,6 +812,50 @@ function setNotifications(enabled) {
   }
 }
 
+function clearDataBanner() {
+  if (!dataBannerEl) return;
+  dataBannerEl.hidden = true;
+  dataBannerEl.className = "data-banner";
+  dataBannerEl.innerHTML = "";
+}
+
+function renderDataBanner(dataStatus) {
+  if (!dataBannerEl) return;
+  if (!dataStatus || !dataStatus.level || dataStatus.level === "fresh") {
+    clearDataBanner();
+    return;
+  }
+
+  dataBannerEl.hidden = false;
+  dataBannerEl.className = `data-banner data-banner--${dataStatus.level}`;
+  dataBannerEl.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.className = "data-banner__title";
+  title.textContent = dataStatus.title || "Data status";
+
+  const message = document.createElement("div");
+  message.className = "data-banner__message";
+  message.textContent = dataStatus.message || "";
+
+  const meta = document.createElement("div");
+  meta.className = "data-banner__meta";
+  const metaParts = [];
+  const updatedAt = parseUpdated(dataStatus.updated);
+  if (updatedAt) {
+    metaParts.push(`Last box score ${formatRelativeTime(Math.max(0, (Date.now() - updatedAt) / 1000))}`);
+  }
+  if (Array.isArray(dataStatus.issues) && dataStatus.issues.length) {
+    metaParts.push(dataStatus.issues.join(" | "));
+  }
+  meta.textContent = metaParts.join(" | ");
+
+  dataBannerEl.append(title, message);
+  if (meta.textContent) {
+    dataBannerEl.appendChild(meta);
+  }
+}
+
 function renderHeaders(home, away) {
   awayHeader.innerHTML = "";
   homeHeader.innerHTML = "";
@@ -1038,6 +1138,7 @@ function showListView() {
   if (backBtn) {
     backBtn.disabled = true;
   }
+  clearDataBanner();
   clearMatchupTheme();
 }
 
@@ -1118,6 +1219,7 @@ function clearGameUI() {
   if (homeLineupEl) {
     homeLineupEl.innerHTML = "";
   }
+  clearDataBanner();
   awayHeader.innerHTML = "";
   homeHeader.innerHTML = "";
   awayTable.innerHTML = "";
@@ -1125,18 +1227,18 @@ function clearGameUI() {
 }
 
 function formatGameStatus(game) {
-  const status = getStatusCode(game);
-  if (status === 1) {
+  const statusKey = getGameStatusKey(game);
+  if (statusKey === "scheduled") {
     const special = getNonTimeStatusText(game && game.statusText);
-    return special || "Scheduled";
+    return special || getGameStatusLabel(game);
   }
-  if (status === 2) return "Live <span class=\"status-live\">&#9679;</span>";
-  if (status === 3) return "Final";
-  return game.statusText || "Unknown";
+  if (statusKey === "live") return "Live <span class=\"status-live\">&#9679;</span>";
+  if (statusKey === "final") return getGameStatusLabel(game);
+  return getGameStatusLabel(game);
 }
 
 function formatLivePhaseText(game, clockText) {
-  if (getStatusCode(game) !== 2) return "";
+  if (getGameStatusKey(game) !== "live") return "";
   if (!shouldShowPhase(game, clockText)) return "";
   return getNonTimeStatusText(game && game.statusText);
 }
@@ -1161,9 +1263,9 @@ function formatTipoff(value) {
 }
 
 function getGameSectionKey(game) {
-  const status = getStatusCode(game);
-  if (status === 2) return "live";
-  if (status === 3) return "finished";
+  const statusKey = getGameStatusKey(game);
+  if (statusKey === "live") return "live";
+  if (statusKey === "final") return "finished";
   return "scheduled";
 }
 
@@ -1208,8 +1310,8 @@ function buildGameListItem(game) {
     document.createTextNode(" @"),
   );
   awayLine.appendChild(awayLeft);
-  const statusCode = getStatusCode(game);
-  const showScore = statusCode === 2 || statusCode === 3;
+  const statusKey = getGameStatusKey(game);
+  const showScore = statusKey === "live" || statusKey === "final";
   if (showScore) {
     awayLine.appendChild(buildScoreBadge(away.score));
   }
@@ -1431,6 +1533,29 @@ function clearMatchupTheme() {
   }
 }
 
+function getUIPreferencesPayload() {
+  return {
+    scoreboardView,
+    tableView,
+    zoomLevel,
+    statFlashEnabled,
+    notificationsEnabled,
+  };
+}
+
+function setScoreboardView(mode) {
+  const next = mode === "full" || mode === "compact" || mode === "hidden" ? mode : "hidden";
+  scoreboardView = next;
+  if (scoreboardEl) {
+    scoreboardEl.classList.toggle("is-collapsed", next === "compact");
+    scoreboardEl.classList.toggle("is-hidden", next === "hidden");
+  }
+  if (toggleBtn) {
+    const label = next === "hidden" ? "No Spoilers" : `${next[0].toUpperCase()}${next.slice(1)}`;
+    toggleBtn.textContent = `View: ${label}`;
+  }
+}
+
 function setTableView(mode) {
   const compact = mode === "compact";
   tableView = compact ? "compact" : "expanded";
@@ -1503,6 +1628,7 @@ async function refresh(options = {}) {
       state = await getState();
     } catch (err) {
       statusEl.textContent = "error";
+      clearDataBanner();
       renderFallback(`API error: ${err}`);
       return;
     }
@@ -1525,6 +1651,7 @@ async function refresh(options = {}) {
 
     if (state.status !== "ok" && state.status !== "scheduled" && state.status !== "postgame" && state.status !== "live_no_data") {
       statusEl.textContent = state.status.replace(/_/g, " ");
+      clearDataBanner();
       renderFallback(state.error || fallbackForStatus(state.status, state.game && state.game.statusText));
       if (state.status === "game_not_found") {
         selectedGameId = "";
@@ -1542,7 +1669,8 @@ async function refresh(options = {}) {
     } else {
       clearFallback();
     }
-    statusEl.textContent = state.game.statusText || state.game.status;
+    renderDataBanner(state.dataStatus);
+    statusEl.textContent = state.game.statusText || getGameStatusLabel(state.game);
     showGameView();
     const home = state.home;
     const away = state.away;
@@ -1587,9 +1715,21 @@ function startPollingIfReady() {
   }
   if (!pywebviewReady) {
     pywebviewReady = true;
-    hydrateFavorites();
   }
-  startPolling();
+  if (!startupPromise) {
+    startupPromise = Promise.all([hydrateFavorites(), hydratePreferences()])
+      .catch((error) => {
+        renderFallback(`Startup sync failed: ${error}`);
+      })
+      .finally(() => {
+        startupHydrated = true;
+        startPolling();
+      });
+    return;
+  }
+  if (startupHydrated) {
+    startPolling();
+  }
 }
 
 function stopPolling() {
@@ -1604,6 +1744,14 @@ window.addEventListener("DOMContentLoaded", () => {
   setUpdatedTime(new Date().toISOString());
   statusEl.textContent = "Waiting";
   renderFallback("Waiting for pywebview...");
+  setScoreboardView(scoreboardView);
+  setTableView(tableView);
+  setStatFlash(statFlashEnabled);
+  setNotifications(notificationsEnabled);
+  if (zoomSelect) {
+    zoomSelect.value = zoomLevel;
+    document.body.style.zoom = zoomLevel;
+  }
 
   startPollingIfReady();
   setupScrollbars();
@@ -1617,11 +1765,10 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   if (zoomSelect) {
-    zoomSelect.value = zoomLevel;
-    document.body.style.zoom = zoomLevel;
     zoomSelect.addEventListener("change", () => {
       zoomLevel = zoomSelect.value || "1";
       document.body.style.zoom = zoomLevel;
+      saveUIPreferences();
     });
   }
 
@@ -1632,25 +1779,12 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   if (toggleBtn && scoreboardEl) {
-    const states = ["full", "compact", "hidden"];
-    let stateIndex = states.indexOf(scoreboardView);
-    if (stateIndex < 0) {
-      stateIndex = 2;
-    }
-
-    const applyState = () => {
-      const state = states[stateIndex];
-      scoreboardView = state;
-      scoreboardEl.classList.toggle("is-collapsed", state === "compact");
-      scoreboardEl.classList.toggle("is-hidden", state === "hidden");
-      const label = state === "hidden" ? "No Spoilers" : `${state[0].toUpperCase()}${state.slice(1)}`;
-      toggleBtn.textContent = `View: ${label}`;
-    };
-
-    applyState();
     toggleBtn.addEventListener("click", () => {
-      stateIndex = (stateIndex + 1) % states.length;
-      applyState();
+      const states = ["full", "compact", "hidden"];
+      const currentIndex = states.indexOf(scoreboardView);
+      const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % states.length;
+      setScoreboardView(states[nextIndex]);
+      saveUIPreferences();
     });
   }
 
@@ -1681,24 +1815,24 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   if (tableToggleBtn) {
-    setTableView(tableView);
     tableToggleBtn.addEventListener("click", () => {
       const next = document.body.classList.contains("table-compact") ? "expanded" : "compact";
       setTableView(next);
+      saveUIPreferences();
     });
   }
 
   if (statFlashToggleBtn) {
-    setStatFlash(statFlashEnabled);
     statFlashToggleBtn.addEventListener("click", () => {
       setStatFlash(!statFlashEnabled);
+      saveUIPreferences();
     });
   }
 
   if (notificationsToggleBtn) {
-    setNotifications(notificationsEnabled);
     notificationsToggleBtn.addEventListener("click", () => {
       setNotifications(!notificationsEnabled);
+      saveUIPreferences();
     });
   }
 

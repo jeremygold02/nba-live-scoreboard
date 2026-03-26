@@ -229,6 +229,43 @@ body {
   gap: 24px;
 }
 
+.data-banner {
+  border-radius: 16px;
+  border: 1px solid transparent;
+  padding: 12px 14px;
+  display: grid;
+  gap: 4px;
+  background: rgba(18, 24, 38, 0.86);
+}
+
+.data-banner--stale {
+  border-color: rgba(230, 195, 104, 0.35);
+  background: linear-gradient(180deg, rgba(230, 195, 104, 0.12), rgba(18, 24, 38, 0.92));
+}
+
+.data-banner--partial,
+.data-banner--pending {
+  border-color: rgba(142, 195, 240, 0.35);
+  background: linear-gradient(180deg, rgba(46, 122, 199, 0.14), rgba(18, 24, 38, 0.92));
+}
+
+.data-banner__title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.data-banner__message {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.data-banner__meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .game-view__header {
   display: flex;
   justify-content: space-between;

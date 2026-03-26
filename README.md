@@ -52,6 +52,7 @@ This UI is designed for pywebview only; browser usage is not supported.
 - No Spoilers hides the scoreboard and team total points in the box score.
 - Stats view toggle switches Expanded and Compact; default is Expanded.
 - Zoom control, manual refresh button, and auto refresh scheduling.
+- UI view, zoom, stat flash, and notification preferences persist across app launches.
 - Row and column hover highlighting for quick reading.
 - Scrollbars appear on interaction and fade when idle.
 
@@ -63,7 +64,7 @@ This UI is designed for pywebview only; browser usage is not supported.
 ### Data and reliability
 - Uses `nba_api.live.nba.endpoints.scoreboard`, `boxscore`, and `playbyplay`.
 - Cached box score and on-court data with exponential backoff on API errors.
-- Falls back to cached data during backoff and surfaces status messaging in the UI.
+- Falls back to cached data during backoff and surfaces explicit stale/partial-data banners in the UI.
 - Auto refresh interval adapts for live vs idle games and pauses when the page is hidden.
 
 ## Controls and views
@@ -78,7 +79,7 @@ This UI is designed for pywebview only; browser usage is not supported.
 
 ## Persistence
 - Favorites are saved to `nba-live-scoreboard-ui/resources/favorites.json`.
-- UI preferences are kept in memory for the current session.
+- UI preferences are saved to `nba-live-scoreboard-ui/resources/ui-preferences.json`.
 
 ## Project structure
 - `nba-live-scoreboard.py`: local server, NBA data fetch, caching/backoff, pywebview window.

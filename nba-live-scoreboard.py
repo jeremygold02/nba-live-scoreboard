@@ -23,6 +23,14 @@ MAX_BACKOFF_SECONDS = 60
 PBP_BACKOFF = {}
 ON_COURT_CACHE = {}
 FAVORITES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "favorites.json"
+UI_PREFERENCES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "ui-preferences.json"
+DEFAULT_UI_PREFERENCES = {
+    "scoreboardView": "hidden",
+    "tableView": "expanded",
+    "zoomLevel": "1",
+    "statFlashEnabled": True,
+    "notificationsEnabled": False,
+}
 
 
 def _now_utc_iso():
@@ -157,13 +165,21 @@ def _starter_ids(players):
     return starters
 
 
+def _on_court_result(data=None, state="missing", message=None):
+    return {
+        "data": data,
+        "state": state,
+        "message": message,
+    }
+
+
 def _build_on_court(game_id, home, away):
     if not game_id or not home or not away:
-        return None
+        return _on_court_result()
     home_players = home.get("players") or []
     away_players = away.get("players") or []
     if not home_players or not away_players:
-        return None
+        return _on_court_result()
 
     home_on = _starter_ids(home_players)
     away_on = _starter_ids(away_players)
@@ -171,7 +187,11 @@ def _build_on_court(game_id, home, away):
     backoff = _get_backoff(game_id, PBP_BACKOFF)
     cached = ON_COURT_CACHE.get(game_id)
     if backoff and cached:
-        return cached
+        return _on_court_result(
+            cached,
+            state="stale",
+            message="Using cached on-court lineups during play-by-play backoff.",
+        )
 
     try:
         payload = playbyplay.PlayByPlay(game_id).get_dict()
@@ -179,7 +199,17 @@ def _build_on_court(game_id, home, away):
     except Exception:
         LOG.exception("playbyplay error")
         _set_backoff(game_id, PBP_BACKOFF)
-        return cached
+        if cached:
+            return _on_court_result(
+                cached,
+                state="stale",
+                message="Using cached on-court lineups because play-by-play is unavailable.",
+            )
+        return _on_court_result(
+            None,
+            state="missing",
+            message="On-court lineups are unavailable because play-by-play data could not be loaded.",
+        )
 
     actions = (payload.get("game") or {}).get("actions") or []
     if actions:
@@ -211,11 +241,21 @@ def _build_on_court(game_id, home, away):
                 target.discard(person_id)
 
     if not home_on and not away_on:
-        return cached
+        if cached:
+            return _on_court_result(
+                cached,
+                state="stale",
+                message="Using last known on-court lineups because live substitutions are unavailable.",
+            )
+        return _on_court_result(
+            None,
+            state="missing",
+            message="On-court lineups are unavailable for this game right now.",
+        )
 
     result = {"home": sorted(home_on), "away": sorted(away_on)}
     ON_COURT_CACHE[game_id] = result
-    return result
+    return _on_court_result(result, state="fresh")
 
 
 def _build_player(player, team_stats, team_minutes):
@@ -328,11 +368,14 @@ def _summarize_game(game):
     home = game.get("homeTeam") or {}
     away = game.get("awayTeam") or {}
     matchup = f"{away.get('teamTricode', '')} @ {home.get('teamTricode', '')}".strip()
+    game_status = game.get("gameStatus")
+    status_text = game.get("gameStatusText") or ""
     return {
         "gameId": game.get("gameId"),
         "matchup": matchup,
-        "statusText": game.get("gameStatusText") or "",
-        "status": game.get("gameStatus"),
+        "statusText": status_text,
+        "status": _map_status(game_status, status_text),
+        "statusKey": _game_status_key(game_status),
         "clock": game.get("gameClock") or "",
         "period": game.get("period"),
         "startTimeUTC": game.get("gameTimeUTC") or "",
@@ -355,6 +398,14 @@ def _looks_like_tipoff(status_text):
     if any(zone in lower for zone in (" et", " ct", " mt", " pt")) and any(ch.isdigit() for ch in text):
         return True
     return False
+
+
+def _game_status_key(game_status):
+    if game_status == 2:
+        return "live"
+    if game_status == 3:
+        return "final"
+    return "scheduled"
 
 
 def _map_status(game_status, status_text):
@@ -406,6 +457,63 @@ def _normalize_view_mode(value):
     return None
 
 
+def _normalize_zoom_level(value):
+    text = str(value).strip()
+    if text in {"0.8", "0.9", "1", "1.1", "1.2"}:
+        return text
+    return None
+
+
+def _normalize_ui_preferences(preferences):
+    result = dict(DEFAULT_UI_PREFERENCES)
+    if not isinstance(preferences, dict):
+        return result
+
+    normalized_view = _normalize_view_mode(preferences.get("scoreboardView"))
+    if normalized_view:
+        result["scoreboardView"] = normalized_view
+
+    result["tableView"] = "compact" if preferences.get("tableView") == "compact" else "expanded"
+
+    normalized_zoom = _normalize_zoom_level(preferences.get("zoomLevel"))
+    if normalized_zoom:
+        result["zoomLevel"] = normalized_zoom
+
+    stat_flash = _coerce_bool(preferences.get("statFlashEnabled"))
+    if stat_flash is not None:
+        result["statFlashEnabled"] = stat_flash
+
+    notifications_enabled = _coerce_bool(preferences.get("notificationsEnabled"))
+    if notifications_enabled is not None:
+        result["notificationsEnabled"] = notifications_enabled
+
+    return result
+
+
+def _load_ui_preferences():
+    try:
+        if not UI_PREFERENCES_PATH.exists():
+            return dict(DEFAULT_UI_PREFERENCES)
+        with UI_PREFERENCES_PATH.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return _normalize_ui_preferences(data)
+    except Exception:
+        LOG.exception("failed to load ui preferences")
+        return dict(DEFAULT_UI_PREFERENCES)
+
+
+def _save_ui_preferences(preferences):
+    try:
+        UI_PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        normalized = _normalize_ui_preferences(preferences)
+        with UI_PREFERENCES_PATH.open("w", encoding="utf-8") as handle:
+            json.dump(normalized, handle)
+        return True
+    except Exception:
+        LOG.exception("failed to save ui preferences")
+        return False
+
+
 def _format_matchup_title(home, away):
     away_code = (away.get("tricode") or "").strip()
     home_code = (home.get("tricode") or "").strip()
@@ -424,6 +532,29 @@ def _format_score_line(home, away):
     if away_code and home_code:
         return f"{away_code} {away_text} - {home_text} {home_code}"
     return ""
+
+
+def _apply_on_court_state(home, away, on_court_state):
+    data = (on_court_state or {}).get("data") or {}
+    if data:
+        return (
+            {**home, "onCourt": data.get("home", [])},
+            {**away, "onCourt": data.get("away", [])},
+        )
+    return (
+        {**home, "onCourt": []},
+        {**away, "onCourt": []},
+    )
+
+
+def _build_data_status(level, title, message, updated, issues=None):
+    return {
+        "level": level,
+        "title": title,
+        "message": message,
+        "updated": updated,
+        "issues": issues or [],
+    }
 
 
 class GameEventNotifier:
@@ -552,6 +683,7 @@ def build_state(game_id=None):
     base_game = {
         "gameId": selected_game.get("gameId"),
         "status": _map_status(game_status, status_text),
+        "statusKey": _game_status_key(game_status),
         "statusText": status_text,
         "period": selected_game.get("period"),
         "clock": selected_game.get("gameClock") or "",
@@ -571,6 +703,7 @@ def build_state(game_id=None):
             "status": "scheduled",
             "updated": updated,
             "dataUpdated": updated,
+            "dataStatus": None,
             "game": base_game,
             "games": summaries,
             "periods": [],
@@ -585,17 +718,22 @@ def build_state(game_id=None):
         LOG.info("backoff active for %s; using cached boxscore", base_game["gameId"])
         home = cache.get("home", {**home_fallback, "stats": {}, "players": []})
         away = cache.get("away", {**away_fallback, "stats": {}, "players": []})
-        on_court = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else None
-        if on_court:
-            home = {**home, "onCourt": on_court.get("home", [])}
-            away = {**away, "onCourt": on_court.get("away", [])}
-        else:
-            home = {**home, "onCourt": []}
-            away = {**away, "onCourt": []}
+        on_court_state = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else _on_court_result()
+        home, away = _apply_on_court_state(home, away, on_court_state)
+        issues = []
+        if on_court_state.get("message"):
+            issues.append(on_court_state["message"])
         return {
             "status": "ok",
             "updated": updated,
             "dataUpdated": cache.get("dataUpdated", updated),
+            "dataStatus": _build_data_status(
+                "stale",
+                "Showing cached box score",
+                "Live updates are temporarily behind because the NBA API is in backoff.",
+                cache.get("dataUpdated", updated),
+                issues,
+            ),
             "game": base_game,
             "games": summaries,
             "periods": cache.get("periods", []),
@@ -618,17 +756,22 @@ def build_state(game_id=None):
         if cache:
             home = cache.get("home", {**home_fallback, "stats": {}, "players": []})
             away = cache.get("away", {**away_fallback, "stats": {}, "players": []})
-            on_court = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else None
-            if on_court:
-                home = {**home, "onCourt": on_court.get("home", [])}
-                away = {**away, "onCourt": on_court.get("away", [])}
-            else:
-                home = {**home, "onCourt": []}
-                away = {**away, "onCourt": []}
+            on_court_state = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else _on_court_result()
+            home, away = _apply_on_court_state(home, away, on_court_state)
+            issues = []
+            if on_court_state.get("message"):
+                issues.append(on_court_state["message"])
             return {
                 "status": "ok",
                 "updated": updated,
                 "dataUpdated": cache.get("dataUpdated", updated),
+                "dataStatus": _build_data_status(
+                    "stale",
+                    "Showing cached box score",
+                    "The latest box score request failed, so the app is using the last successful snapshot.",
+                    cache.get("dataUpdated", updated),
+                    issues,
+                ),
                 "game": base_game,
                 "games": summaries,
                 "periods": cache.get("periods", []),
@@ -673,17 +816,32 @@ def build_state(game_id=None):
             "periods": periods,
             "dataUpdated": updated,
         }
-    on_court = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else None
-    if on_court:
-        home = {**home, "onCourt": on_court.get("home", [])}
-        away = {**away, "onCourt": on_court.get("away", [])}
-    else:
-        home = {**home, "onCourt": []}
-        away = {**away, "onCourt": []}
+    on_court_state = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else _on_court_result()
+    home, away = _apply_on_court_state(home, away, on_court_state)
+
+    data_status = None
+    if on_court_state.get("state") in ("stale", "missing"):
+        message = on_court_state.get("message") or "On-court lineups are unavailable right now."
+        data_status = _build_data_status(
+            "partial",
+            "Live box score is current",
+            message,
+            updated,
+            [message],
+        )
+    elif game_status == 2 and not (home.get("players") or away.get("players")):
+        data_status = _build_data_status(
+            "pending",
+            "Live box score pending",
+            "The game is live, but player stats have not populated yet.",
+            updated,
+        )
+
     return {
         "status": "ok" if (home.get("players") or away.get("players")) else ("postgame" if game_status == 3 else "live_no_data"),
         "updated": updated,
         "dataUpdated": BOX_CACHE.get(base_game["gameId"], {}).get("dataUpdated", updated),
+        "dataStatus": data_status,
         "game": base_game,
         "games": summaries,
         "periods": periods,
@@ -702,9 +860,10 @@ class RaptorsLiveAPI:
             "game": None,
         }
         self._favorites = _load_favorites()
+        self._preferences = _load_ui_preferences()
         self._notifier = GameEventNotifier()
-        self._view_mode = "hidden"
-        self._notifications_enabled = False
+        self._view_mode = self._preferences.get("scoreboardView", "hidden")
+        self._notifications_enabled = bool(self._preferences.get("notificationsEnabled"))
 
     def get_state(self, game_id=None, view_mode=None, notifications_enabled=None):
         LOG.info("js->get_state called")
@@ -740,6 +899,30 @@ class RaptorsLiveAPI:
             self._favorites = favorites
         saved = _save_favorites(favorites)
         return {"status": "ok" if saved else "error"}
+
+    def get_preferences(self):
+        LOG.info("js->get_preferences called")
+        with self._lock:
+            return dict(self._preferences)
+
+    def set_preferences(self, preferences):
+        LOG.info("js->set_preferences called")
+        if not isinstance(preferences, dict):
+            return {"status": "error", "error": "preferences must be an object"}
+
+        with self._lock:
+            merged = dict(self._preferences)
+            merged.update(preferences)
+            normalized = _normalize_ui_preferences(merged)
+            self._preferences = normalized
+            self._view_mode = normalized.get("scoreboardView", self._view_mode)
+            self._notifications_enabled = bool(normalized.get("notificationsEnabled"))
+
+        saved = _save_ui_preferences(normalized)
+        return {
+            "status": "ok" if saved else "error",
+            "preferences": normalized,
+        }
 
 
 if __name__ == "__main__":
@@ -801,6 +984,15 @@ if __name__ == "__main__":
                 self.end_headers()
                 self.wfile.write(payload)
                 return
+            if parsed.path == "/api/preferences":
+                LOG.info("http /api/preferences requested")
+                payload = json.dumps(api.get_preferences()).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             super().do_GET()
 
         def do_POST(self):
@@ -813,6 +1005,21 @@ if __name__ == "__main__":
                 except json.JSONDecodeError:
                     payload = []
                 result = api.set_favorites(payload)
+                response = json.dumps(result).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+                return
+            if parsed.path == "/api/preferences":
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length)
+                try:
+                    payload = json.loads(body.decode("utf-8") or "{}")
+                except json.JSONDecodeError:
+                    payload = {}
+                result = api.set_preferences(payload)
                 response = json.dumps(result).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
