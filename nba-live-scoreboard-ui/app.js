@@ -1,8 +1,13 @@
-const DETAIL_LIVE_REFRESH_MS = 10000;
-const DETAIL_IDLE_REFRESH_MS = 20000;
-const SCOREBOARD_LIVE_REFRESH_MS = 20000;
-const SCOREBOARD_IDLE_REFRESH_MS = 30000;
-const API_THROTTLE_MS = 5000;
+import {
+  API_THROTTLE_MS,
+  columns,
+  DETAIL_IDLE_REFRESH_MS,
+  DETAIL_LIVE_REFRESH_MS,
+  SCOREBOARD_IDLE_REFRESH_MS,
+  SCOREBOARD_LIVE_REFRESH_MS,
+  teamColors,
+} from "./js/config.js";
+
 let scoreboardRefreshTimer = null;
 let detailRefreshTimer = null;
 let isScoreboardRefreshing = false;
@@ -76,55 +81,6 @@ let gameSearchTerm = "";
 let gameSort = "importance";
 let startupPromise = null;
 let startupHydrated = false;
-const teamColors = {
-  ATL: "#e03a3e",
-  BOS: "#007a33",
-  BKN: "#111111",
-  CHA: "#1d1160",
-  CHI: "#ce1141",
-  CLE: "#6f263d",
-  DAL: "#00538c",
-  DEN: "#0e2240",
-  DET: "#c8102e",
-  GSW: "#1d428a",
-  HOU: "#ce1141",
-  IND: "#002d62",
-  LAC: "#c8102e",
-  LAL: "#552583",
-  MEM: "#5d76a9",
-  MIA: "#98002e",
-  MIL: "#00471b",
-  MIN: "#0c2340",
-  NOP: "#0c2340",
-  NYK: "#006bb6",
-  OKC: "#007ac1",
-  ORL: "#0077c0",
-  PHI: "#006bb6",
-  PHX: "#1d1160",
-  POR: "#e03a3e",
-  SAC: "#5a2d81",
-  SAS: "#c4ced4",
-  TOR: "#ce1141",
-  UTA: "#002b5c",
-  WAS: "#002b5c",
-};
-
-const columns = [
-  "MIN",
-  "PTS",
-  "REB",
-  "AST",
-  "STL",
-  "BLK",
-  "TO",
-  "PF",
-  "FG",
-  "3PT",
-  "FT",
-  "TS%",
-  "eFG%",
-  "+/-",
-];
 
 function formatRecord(team) {
   if (!team) return "";
