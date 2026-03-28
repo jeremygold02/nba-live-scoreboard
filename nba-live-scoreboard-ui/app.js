@@ -7,6 +7,49 @@ import {
   SCOREBOARD_LIVE_REFRESH_MS,
   teamColors,
 } from "./js/config.js";
+import {
+  appRoot,
+  awayCard,
+  awayHeader,
+  awayLineupEl,
+  awayLineupTitleEl,
+  awayTable,
+  backBtn,
+  centerCard,
+  clearSelectionBtn,
+  comparisonBodyEl,
+  comparisonEl,
+  comparisonToggleBtn,
+  dataBannerEl,
+  detailsEl,
+  fallbackEl,
+  gameFiltersEl,
+  gameSearchInput,
+  gameSortSelect,
+  gameViewEl,
+  gamesEl,
+  homeCard,
+  homeHeader,
+  homeLineupEl,
+  homeLineupTitleEl,
+  homeTable,
+  lineupsEl,
+  listViewEl,
+  notificationsToggleBtn,
+  periodsEl,
+  periodsToggleBtn,
+  refreshBtn,
+  refreshLabel,
+  scoreboardEl,
+  selectedGameEl,
+  selectedGameViewEl,
+  statFlashToggleBtn,
+  statusEl,
+  tableToggleBtn,
+  toggleBtn,
+  updatedEl,
+  zoomSelect,
+} from "./js/dom.js";
 
 let scoreboardRefreshTimer = null;
 let detailRefreshTimer = null;
@@ -15,48 +58,6 @@ let isDetailRefreshing = false;
 let lastScoreboardRefreshAt = 0;
 let lastDetailRefreshAt = 0;
 let pywebviewReady = false;
-
-const updatedEl = document.getElementById("updated");
-const statusEl = document.getElementById("status");
-const awayCard = document.getElementById("away-card");
-const homeCard = document.getElementById("home-card");
-const centerCard = document.getElementById("game-center");
-const detailsEl = document.getElementById("game-details");
-const periodsToggleBtn = document.getElementById("periods-toggle");
-const periodsEl = document.getElementById("periods");
-const comparisonEl = document.getElementById("comparison");
-const comparisonBodyEl = document.getElementById("comparison-body");
-const comparisonToggleBtn = document.getElementById("comparison-toggle");
-const lineupsEl = document.getElementById("lineups");
-const awayLineupTitleEl = document.getElementById("away-lineup-title");
-const homeLineupTitleEl = document.getElementById("home-lineup-title");
-const awayLineupEl = document.getElementById("away-lineup");
-const homeLineupEl = document.getElementById("home-lineup");
-const awayHeader = document.getElementById("away-header");
-const homeHeader = document.getElementById("home-header");
-const awayTable = document.getElementById("away-table");
-const homeTable = document.getElementById("home-table");
-const gamesEl = document.getElementById("games");
-const gameFiltersEl = document.getElementById("game-filters");
-const gameSearchInput = document.getElementById("game-search");
-const gameSortSelect = document.getElementById("game-sort");
-const selectedGameEl = document.getElementById("selected-game");
-const selectedGameViewEl = document.getElementById("selected-game-view");
-const clearSelectionBtn = document.getElementById("clear-selection");
-const listViewEl = document.getElementById("list-view");
-const gameViewEl = document.getElementById("game-view");
-const backBtn = document.getElementById("back-to-list");
-const tableToggleBtn = document.getElementById("table-toggle");
-const statFlashToggleBtn = document.getElementById("stat-flash-toggle");
-const notificationsToggleBtn = document.getElementById("notifications-toggle");
-const fallbackEl = document.getElementById("fallback");
-const dataBannerEl = document.getElementById("data-banner");
-const scoreboardEl = document.getElementById("scoreboard");
-const toggleBtn = document.getElementById("scoreboard-toggle");
-const refreshBtn = document.getElementById("refresh-now");
-const zoomSelect = document.getElementById("zoom-select");
-const appRoot = document.getElementById("app");
-const refreshLabel = refreshBtn ? refreshBtn.textContent : "Refresh";
 let activeCell = null;
 let selectedGameId = "";
 let lastUpdatedAt = null;
