@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 from http.server import SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -9,6 +10,7 @@ from pathlib import Path
 from socketserver import TCPServer
 
 import webview
+from requests import exceptions as requests_exceptions
 from nba_api.live.nba.endpoints import scoreboard, boxscore, playbyplay
 
 try:
@@ -17,6 +19,9 @@ except Exception:
     plyer_notification = None
 
 REFRESH_SECONDS = 10
+LIVE_REQUEST_TIMEOUT_SECONDS = 15
+LIVE_REQUEST_RETRY_ATTEMPTS = 3
+LIVE_REQUEST_RETRY_BACKOFF_SECONDS = 0.5
 LOG = logging.getLogger("nba_live_scoreboard")
 BOX_CACHE = {}
 BOX_BACKOFF = {}
@@ -33,9 +38,65 @@ DEFAULT_UI_PREFERENCES = {
     "notificationsEnabled": False,
 }
 
+TRANSIENT_REQUEST_PATTERNS = (
+    "connection aborted",
+    "remote end closed connection without response",
+    "remotedisconnected",
+    "connection reset by peer",
+    "connection broken",
+    "read timed out",
+    "temporarily unavailable",
+)
+
 
 def _now_utc_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_transient_request_error(exc):
+    if isinstance(
+        exc,
+        (
+            requests_exceptions.ConnectionError,
+            requests_exceptions.Timeout,
+            requests_exceptions.ChunkedEncodingError,
+        ),
+    ):
+        return True
+    text = str(exc).strip().lower()
+    return any(pattern in text for pattern in TRANSIENT_REQUEST_PATTERNS)
+
+
+def _friendly_request_error(context, exc):
+    if _is_transient_request_error(exc):
+        return f"The NBA live data connection dropped while loading {context}. The app will retry automatically."
+    text = str(exc).strip()
+    if text:
+        return text
+    return f"Unable to load {context} from the NBA live API right now."
+
+
+def _fetch_live_data(context, factory):
+    last_exc = None
+    for attempt in range(1, LIVE_REQUEST_RETRY_ATTEMPTS + 1):
+        try:
+            return factory()
+        except Exception as exc:
+            last_exc = exc
+            transient = _is_transient_request_error(exc)
+            if not transient or attempt >= LIVE_REQUEST_RETRY_ATTEMPTS:
+                raise
+            delay = LIVE_REQUEST_RETRY_BACKOFF_SECONDS * attempt
+            LOG.warning(
+                "%s request failed on attempt %s/%s: %s; retrying in %.1fs",
+                context,
+                attempt,
+                LIVE_REQUEST_RETRY_ATTEMPTS,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+    raise last_exc
 
 
 def _get_backoff(game_id, backoff_map=None):
@@ -195,7 +256,13 @@ def _build_on_court(game_id, home, away):
         )
 
     try:
-        payload = playbyplay.PlayByPlay(game_id).get_dict()
+        payload = _fetch_live_data(
+            "play-by-play",
+            lambda: playbyplay.PlayByPlay(
+                game_id,
+                timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
+            ).get_dict(),
+        )
         _clear_backoff(game_id, PBP_BACKOFF)
     except Exception:
         LOG.exception("playbyplay error")
@@ -684,12 +751,15 @@ def _load_scoreboard_snapshot():
     updated = _now_utc_iso()
     LOG.info("scoreboard snapshot start")
     try:
-        board = scoreboard.ScoreBoard()
+        board = _fetch_live_data(
+            "today's scoreboard",
+            lambda: scoreboard.ScoreBoard(timeout=LIVE_REQUEST_TIMEOUT_SECONDS),
+        )
         games = board.games.get_dict()
         LOG.info("scoreboard returned %s games", len(games))
     except Exception as exc:
         LOG.exception("scoreboard error")
-        return updated, None, [], str(exc)
+        return updated, None, [], _friendly_request_error("today's scoreboard", exc)
 
     summaries = [_summarize_game(g) for g in games]
     return updated, games, summaries, None
@@ -825,13 +895,19 @@ def build_state(game_id=None):
     error = None
     try:
         LOG.info("fetching boxscore for %s", base_game["gameId"])
-        box = boxscore.BoxScore(base_game["gameId"]).get_dict()
+        box = _fetch_live_data(
+            "the box score",
+            lambda: boxscore.BoxScore(
+                base_game["gameId"],
+                timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
+            ).get_dict(),
+        )
         LOG.info("boxscore received")
         _clear_backoff(base_game["gameId"])
     except Exception as exc:
         LOG.exception("boxscore error")
         box = {}
-        error = str(exc)
+        error = _friendly_request_error("the box score", exc)
         _set_backoff(base_game["gameId"])
         if cache:
             home = cache.get("home", {**home_fallback, "stats": {}, "players": []})
