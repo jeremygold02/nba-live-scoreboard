@@ -8,6 +8,15 @@ import {
   teamColors,
 } from "./js/config.js";
 import {
+  canUsePywebview,
+  fetchDetailState,
+  fetchFavorites,
+  fetchPreferences,
+  fetchScoreboardState,
+  persistFavorites,
+  persistPreferences,
+} from "./js/backend-api.js";
+import {
   appRoot,
   awayCard,
   awayHeader,
@@ -198,23 +207,9 @@ function setUpdatedTime(value) {
   }
 }
 
-function canUsePywebview() {
-  return Boolean(window.pywebview && window.pywebview.api && window.pywebview.api.get_state);
-}
-
-async function getPreferences() {
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.get_preferences) {
-    return window.pywebview.api.get_preferences();
-  }
-  return null;
-}
-
 async function saveUIPreferences() {
   const payload = getUIPreferencesPayload();
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.set_preferences) {
-    return window.pywebview.api.set_preferences(payload);
-  }
-  return null;
+  return persistPreferences(payload);
 }
 
 function toggleFavoriteTeam(tricode) {
@@ -228,30 +223,20 @@ function toggleFavoriteTeam(tricode) {
   renderGameList(lastGames);
 }
 
-async function getFavorites() {
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.get_favorites) {
-    return window.pywebview.api.get_favorites();
-  }
-  return [];
-}
-
 async function saveFavoriteTeams() {
   const payload = [...favoriteTeams];
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.set_favorites) {
-    return window.pywebview.api.set_favorites(payload);
-  }
-  return null;
+  return persistFavorites(payload);
 }
 
 async function hydrateFavorites() {
-  const favorites = await getFavorites();
+  const favorites = await fetchFavorites();
   favoriteTeams.clear();
   favorites.forEach((team) => favoriteTeams.add(team));
   renderGameList(lastGames);
 }
 
 async function hydratePreferences() {
-  const preferences = await getPreferences();
+  const preferences = await fetchPreferences();
   if (!preferences) return;
   if (preferences.scoreboardView) {
     setScoreboardView(preferences.scoreboardView);
@@ -1551,31 +1536,19 @@ function getScoreboardView() {
 }
 
 async function getScoreboardState() {
-  if (canUsePywebview() && window.pywebview.api.get_scoreboard) {
-    const view = getScoreboardView();
-    return window.pywebview.api.get_scoreboard(selectedGameId || null, view, notificationsEnabled);
-  }
-  if (canUsePywebview()) {
-    const view = getScoreboardView();
-    return window.pywebview.api.get_state(null, view, notificationsEnabled);
-  }
-  return {
-    status: "error",
-    updated: new Date().toISOString(),
-    error: "pywebview API not available. Run nba-live-scoreboard.py.",
-  };
+  return fetchScoreboardState({
+    selectedGameId,
+    view: getScoreboardView(),
+    notificationsEnabled,
+  });
 }
 
 async function getDetailState() {
-  if (canUsePywebview()) {
-    const view = getScoreboardView();
-    return window.pywebview.api.get_state(selectedGameId || null, view, notificationsEnabled);
-  }
-  return {
-    status: "error",
-    updated: new Date().toISOString(),
-    error: "pywebview API not available. Run nba-live-scoreboard.py.",
-  };
+  return fetchDetailState({
+    selectedGameId,
+    view: getScoreboardView(),
+    notificationsEnabled,
+  });
 }
 
 function setRefreshButtonBusy(isBusy) {
