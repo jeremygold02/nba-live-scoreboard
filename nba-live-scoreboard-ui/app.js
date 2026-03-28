@@ -1799,6 +1799,14 @@ function clearDetailRefreshTimer() {
   detailRefreshTimer = null;
 }
 
+function getRefreshDelay(state, fallbackMs) {
+  const value = Number(state && state.polling && state.polling.refreshMs);
+  if (!Number.isFinite(value)) {
+    return fallbackMs;
+  }
+  return Math.max(API_THROTTLE_MS, Math.round(value));
+}
+
 function scheduleScoreboardRefresh(delay) {
   clearScoreboardRefreshTimer();
   if (document.hidden || !startupHydrated) return;
@@ -1969,11 +1977,14 @@ async function refreshScoreboard(options = {}) {
     }
 
     if (state.status === "error") {
-      scheduleScoreboardRefresh(SCOREBOARD_IDLE_REFRESH_MS);
+      scheduleScoreboardRefresh(getRefreshDelay(state, SCOREBOARD_IDLE_REFRESH_MS));
       return;
     }
 
-    const nextInterval = state.hasLiveGames ? SCOREBOARD_LIVE_REFRESH_MS : SCOREBOARD_IDLE_REFRESH_MS;
+    const nextInterval = getRefreshDelay(
+      state,
+      state.hasLiveGames ? SCOREBOARD_LIVE_REFRESH_MS : SCOREBOARD_IDLE_REFRESH_MS,
+    );
     scheduleScoreboardRefresh(nextInterval);
   } finally {
     isScoreboardRefreshing = false;
@@ -2031,7 +2042,7 @@ async function refreshDetail(options = {}) {
       }
       clearGameUI();
       if (state.status === "error") {
-        scheduleDetailRefresh(DETAIL_IDLE_REFRESH_MS);
+        scheduleDetailRefresh(getRefreshDelay(state, DETAIL_IDLE_REFRESH_MS));
       } else {
         clearDetailRefreshTimer();
       }
@@ -2067,7 +2078,9 @@ async function refreshDetail(options = {}) {
     renderTeamTable(awayTable, away, `away-${away.id || away.tricode || "team"}`, showTotals, hidePoints, targetRows);
     renderTeamTable(homeTable, home, `home-${home.id || home.tricode || "team"}`, showTotals, hidePoints, targetRows);
     const isLive = state.game && state.game.statusKey === "live";
-    scheduleDetailRefresh(isLive ? DETAIL_LIVE_REFRESH_MS : DETAIL_IDLE_REFRESH_MS);
+    scheduleDetailRefresh(
+      getRefreshDelay(state, isLive ? DETAIL_LIVE_REFRESH_MS : DETAIL_IDLE_REFRESH_MS),
+    );
   } finally {
     isDetailRefreshing = false;
   }

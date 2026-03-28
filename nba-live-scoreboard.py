@@ -22,12 +22,22 @@ REFRESH_SECONDS = 10
 LIVE_REQUEST_TIMEOUT_SECONDS = 15
 LIVE_REQUEST_RETRY_ATTEMPTS = 3
 LIVE_REQUEST_RETRY_BACKOFF_SECONDS = 0.5
+SCOREBOARD_LIVE_BASE_POLL_MS = 12000
+SCOREBOARD_LIVE_MIN_POLL_MS = 8000
+SCOREBOARD_IDLE_POLL_MS = 30000
+SCOREBOARD_MAX_POLL_MS = 60000
+DETAIL_LIVE_BASE_POLL_MS = 8000
+DETAIL_LIVE_MIN_POLL_MS = 5000
+DETAIL_PARTIAL_POLL_MS = 12000
+DETAIL_IDLE_POLL_MS = 20000
+DETAIL_MAX_POLL_MS = 60000
 LOG = logging.getLogger("nba_live_scoreboard")
 BOX_CACHE = {}
 BOX_BACKOFF = {}
 MAX_BACKOFF_SECONDS = 60
 PBP_BACKOFF = {}
 ON_COURT_CACHE = {}
+REQUEST_HEALTH = {}
 FAVORITES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "favorites.json"
 UI_PREFERENCES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "ui-preferences.json"
 DEFAULT_UI_PREFERENCES = {
@@ -47,6 +57,16 @@ TRANSIENT_REQUEST_PATTERNS = (
     "read timed out",
     "temporarily unavailable",
 )
+
+
+def _request_health_defaults():
+    return {
+        "successStreak": 0,
+        "failureStreak": 0,
+        "lastSuccess": None,
+        "lastFailure": None,
+        "lastError": None,
+    }
 
 
 def _now_utc_iso():
@@ -76,15 +96,167 @@ def _friendly_request_error(context, exc):
     return f"Unable to load {context} from the NBA live API right now."
 
 
-def _fetch_live_data(context, factory):
+def _get_request_health(name):
+    state = REQUEST_HEALTH.get(name)
+    if state is None:
+        state = _request_health_defaults()
+        REQUEST_HEALTH[name] = state
+    return state
+
+
+def _mark_request_success(name):
+    if not name:
+        return
+    state = _get_request_health(name)
+    state["successStreak"] = min(state["successStreak"] + 1, 6)
+    state["failureStreak"] = 0
+    state["lastSuccess"] = _now_utc_iso()
+    state["lastError"] = None
+
+
+def _mark_request_failure(name, exc):
+    if not name:
+        return
+    state = _get_request_health(name)
+    state["successStreak"] = 0
+    state["failureStreak"] = min(state["failureStreak"] + 1, 6)
+    state["lastFailure"] = _now_utc_iso()
+    state["lastError"] = str(exc).strip() or exc.__class__.__name__
+
+
+def _adaptive_interval_ms(base_ms, min_ms, max_ms, request_keys=None):
+    keys = [key for key in (request_keys or []) if key]
+    failure_streak = max((_get_request_health(key)["failureStreak"] for key in keys), default=0)
+    success_streak = max((_get_request_health(key)["successStreak"] for key in keys), default=0)
+
+    if failure_streak > 0:
+        multiplier = min(1 + failure_streak, 4)
+        return min(max_ms, max(min_ms, int(base_ms * multiplier)))
+
+    if min_ms >= base_ms or success_streak <= 0:
+        return min(max_ms, max(min_ms, base_ms))
+
+    steps = min(success_streak, 4)
+    reduction = int(((base_ms - min_ms) * steps) / 4)
+    return min(max_ms, max(min_ms, base_ms - reduction))
+
+
+def _backoff_remaining_ms(entry):
+    if not entry:
+        return 0
+    remaining = (entry["nextAllowed"] - datetime.now(timezone.utc)).total_seconds()
+    return max(0, int(remaining * 1000))
+
+
+def _build_polling_state(refresh_ms, mode, reason=None):
+    result = {
+        "refreshMs": int(max(1000, refresh_ms)),
+        "mode": mode,
+    }
+    if reason:
+        result["reason"] = reason
+    return result
+
+
+def _scoreboard_polling_state(status, has_live_games):
+    if status == "error":
+        refresh_ms = _adaptive_interval_ms(
+            SCOREBOARD_IDLE_POLL_MS,
+            SCOREBOARD_IDLE_POLL_MS,
+            SCOREBOARD_MAX_POLL_MS,
+            ("scoreboard",),
+        )
+        return _build_polling_state(refresh_ms, "error", "scoreboard_error")
+
+    if has_live_games:
+        refresh_ms = _adaptive_interval_ms(
+            SCOREBOARD_LIVE_BASE_POLL_MS,
+            SCOREBOARD_LIVE_MIN_POLL_MS,
+            SCOREBOARD_MAX_POLL_MS,
+            ("scoreboard",),
+        )
+        return _build_polling_state(refresh_ms, "live")
+
+    return _build_polling_state(SCOREBOARD_IDLE_POLL_MS, "idle")
+
+
+def _detail_polling_state(status, game=None, data_status=None):
+    game = game or {}
+    game_status_key = game.get("statusKey")
+    game_id = game.get("gameId")
+
+    if status == "error":
+        refresh_ms = _adaptive_interval_ms(
+            DETAIL_IDLE_POLL_MS,
+            DETAIL_IDLE_POLL_MS,
+            DETAIL_MAX_POLL_MS,
+            ("scoreboard", "boxscore", "playbyplay"),
+        )
+        return _build_polling_state(refresh_ms, "error", "detail_error")
+
+    if game_status_key != "live":
+        return _build_polling_state(DETAIL_IDLE_POLL_MS, "idle")
+
+    data_level = (data_status or {}).get("level")
+    if data_level == "stale":
+        base_ms = DETAIL_PARTIAL_POLL_MS
+        min_ms = DETAIL_PARTIAL_POLL_MS
+        mode = "backoff"
+    elif data_level in ("partial", "pending"):
+        base_ms = DETAIL_PARTIAL_POLL_MS
+        min_ms = 9000
+        mode = "partial"
+    else:
+        base_ms = DETAIL_LIVE_BASE_POLL_MS
+        min_ms = DETAIL_LIVE_MIN_POLL_MS
+        mode = "live"
+
+    refresh_ms = _adaptive_interval_ms(
+        base_ms,
+        min_ms,
+        DETAIL_MAX_POLL_MS,
+        ("boxscore", "playbyplay"),
+    )
+
+    if game_id:
+        refresh_ms = max(
+            refresh_ms,
+            _backoff_remaining_ms(_get_backoff(game_id, BOX_BACKOFF)),
+            _backoff_remaining_ms(_get_backoff(game_id, PBP_BACKOFF)),
+        )
+
+    return _build_polling_state(refresh_ms, mode)
+
+
+def _apply_scoreboard_polling(state):
+    state["polling"] = _scoreboard_polling_state(
+        state.get("status"),
+        bool(state.get("hasLiveGames")),
+    )
+    return state
+
+
+def _apply_detail_polling(state):
+    state["polling"] = _detail_polling_state(
+        state.get("status"),
+        state.get("game"),
+        state.get("dataStatus"),
+    )
+    return state
+
+
+def _fetch_live_data(context, factory, request_key=None):
     last_exc = None
     for attempt in range(1, LIVE_REQUEST_RETRY_ATTEMPTS + 1):
         try:
-            return factory()
+            result = factory()
+            _mark_request_success(request_key)
+            return result
         except Exception as exc:
             last_exc = exc
             transient = _is_transient_request_error(exc)
             if not transient or attempt >= LIVE_REQUEST_RETRY_ATTEMPTS:
+                _mark_request_failure(request_key, exc)
                 raise
             delay = LIVE_REQUEST_RETRY_BACKOFF_SECONDS * attempt
             LOG.warning(
@@ -262,6 +434,7 @@ def _build_on_court(game_id, home, away):
                 game_id,
                 timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
             ).get_dict(),
+            request_key="playbyplay",
         )
         _clear_backoff(game_id, PBP_BACKOFF)
     except Exception:
@@ -754,6 +927,7 @@ def _load_scoreboard_snapshot():
         board = _fetch_live_data(
             "today's scoreboard",
             lambda: scoreboard.ScoreBoard(timeout=LIVE_REQUEST_TIMEOUT_SECONDS),
+            request_key="scoreboard",
         )
         games = board.games.get_dict()
         LOG.info("scoreboard returned %s games", len(games))
@@ -768,64 +942,64 @@ def _load_scoreboard_snapshot():
 def build_scoreboard_state():
     updated, games, summaries, error = _load_scoreboard_snapshot()
     if error:
-        return {
+        return _apply_scoreboard_polling({
             "status": "error",
             "updated": updated,
             "error": error,
             "games": [],
             "hasLiveGames": False,
-        }
+        })
 
     if not games:
-        return {
+        return _apply_scoreboard_polling({
             "status": "no_games",
             "updated": updated,
             "games": [],
             "hasLiveGames": False,
-        }
+        })
 
-    return {
+    return _apply_scoreboard_polling({
         "status": "ok",
         "updated": updated,
         "games": summaries,
         "hasLiveGames": any(game.get("statusKey") == "live" for game in summaries),
-    }
+    })
 
 
 def build_state(game_id=None):
     updated, games, summaries, error = _load_scoreboard_snapshot()
     if error:
-        return {
+        return _apply_detail_polling({
             "status": "error",
             "updated": updated,
             "error": error,
             "games": [],
-        }
+        })
 
     LOG.info("build_state start")
 
     if not games:
-        return {
+        return _apply_detail_polling({
             "status": "no_games",
             "updated": updated,
             "games": [],
-        }
+        })
 
     if not game_id:
-        return {
+        return _apply_detail_polling({
             "status": "select_game",
             "updated": updated,
             "games": summaries,
-        }
+        })
 
     selected_game = next((g for g in games if g.get("gameId") == game_id), None)
     if not selected_game:
         LOG.info("game id %s not found in scoreboard", game_id)
-        return {
+        return _apply_detail_polling({
             "status": "game_not_found",
             "updated": updated,
             "games": summaries,
-        }
+        })
 
     game_status = selected_game.get("gameStatus")
     status_text = selected_game.get("gameStatusText") or ""
@@ -849,7 +1023,7 @@ def build_state(game_id=None):
     away_fallback = _team_from_scoreboard(selected_game.get("awayTeam") or {})
 
     if game_status not in (2, 3):
-        return {
+        return _apply_detail_polling({
             "status": "scheduled",
             "updated": updated,
             "dataUpdated": updated,
@@ -860,7 +1034,7 @@ def build_state(game_id=None):
             "home": {**home_fallback, "stats": {}, "players": [], "onCourt": []},
             "away": {**away_fallback, "stats": {}, "players": [], "onCourt": []},
             "error": None,
-        }
+        })
 
     cache = BOX_CACHE.get(base_game["gameId"])
     backoff = _get_backoff(base_game["gameId"])
@@ -873,7 +1047,7 @@ def build_state(game_id=None):
         issues = []
         if on_court_state.get("message"):
             issues.append(on_court_state["message"])
-        return {
+        return _apply_detail_polling({
             "status": "ok",
             "updated": updated,
             "dataUpdated": cache.get("dataUpdated", updated),
@@ -890,7 +1064,7 @@ def build_state(game_id=None):
             "home": home,
             "away": away,
             "error": "Using cached data during API backoff.",
-        }
+        })
 
     error = None
     try:
@@ -901,6 +1075,7 @@ def build_state(game_id=None):
                 base_game["gameId"],
                 timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
             ).get_dict(),
+            request_key="boxscore",
         )
         LOG.info("boxscore received")
         _clear_backoff(base_game["gameId"])
@@ -917,7 +1092,7 @@ def build_state(game_id=None):
             issues = []
             if on_court_state.get("message"):
                 issues.append(on_court_state["message"])
-            return {
+            return _apply_detail_polling({
                 "status": "ok",
                 "updated": updated,
                 "dataUpdated": cache.get("dataUpdated", updated),
@@ -934,7 +1109,7 @@ def build_state(game_id=None):
                 "home": home,
                 "away": away,
                 "error": "Using cached data after boxscore error.",
-            }
+            })
 
     game_data = box.get("game") or {}
     period_count = int(game_data.get("period") or base_game.get("period") or 0)
@@ -993,7 +1168,7 @@ def build_state(game_id=None):
             updated,
         )
 
-    return {
+    return _apply_detail_polling({
         "status": "ok" if (home.get("players") or away.get("players")) else ("postgame" if game_status == 3 else "live_no_data"),
         "updated": updated,
         "dataUpdated": BOX_CACHE.get(base_game["gameId"], {}).get("dataUpdated", updated),
@@ -1004,7 +1179,7 @@ def build_state(game_id=None):
         "home": home,
         "away": away,
         "error": error,
-    }
+    })
 
 
 class RaptorsLiveAPI:
