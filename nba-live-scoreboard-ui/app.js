@@ -72,6 +72,13 @@ import {
   shouldShowPhase,
 } from "./js/game-status.js";
 import {
+  getEmptyGameListMessage,
+  isFavoriteGame,
+  matchesGameFilter,
+  matchesGameSearch,
+  sortGamesForList,
+} from "./js/game-list-utils.js";
+import {
   calcEfg,
   calcShotPct,
   calcTrueShooting,
@@ -1068,68 +1075,6 @@ function formatSelectedGameLabel(game) {
   return `${away.tricode || ""} @ ${home.tricode || ""}`.trim() || game.matchup || "Selected game";
 }
 
-function getTipoffTimestamp(game) {
-  if (!game || !game.startTimeUTC) return Number.POSITIVE_INFINITY;
-  const parsed = Date.parse(game.startTimeUTC);
-  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
-}
-
-function getGameImportanceRank(game) {
-  const sectionKey = getGameSectionKey(game);
-  const favorite = isFavoriteGame(game);
-  if (favorite && sectionKey === "live") return 0;
-  if (sectionKey === "live") return 1;
-  if (favorite && sectionKey === "scheduled") return 2;
-  if (sectionKey === "scheduled") return 3;
-  if (favorite && sectionKey === "finished") return 4;
-  return 5;
-}
-
-function matchesGameSearch(game) {
-  if (!gameSearchTerm) return true;
-  const away = game.away || {};
-  const home = game.home || {};
-  const haystack = [
-    game.matchup,
-    away.city,
-    away.name,
-    away.tricode,
-    home.city,
-    home.name,
-    home.tricode,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(gameSearchTerm);
-}
-
-function matchesGameFilter(game) {
-  if (gameFilter === "all") return true;
-  if (gameFilter === "favorites") return isFavoriteGame(game);
-  return getGameSectionKey(game) === gameFilter;
-}
-
-function sortGamesForList(games) {
-  const withIndex = games.map((game, index) => ({ game, index }));
-  withIndex.sort((a, b) => {
-    if (gameSort === "tipoff") {
-      const tipoffDiff = getTipoffTimestamp(a.game) - getTipoffTimestamp(b.game);
-      if (tipoffDiff !== 0) return tipoffDiff;
-      const importanceDiff = getGameImportanceRank(a.game) - getGameImportanceRank(b.game);
-      if (importanceDiff !== 0) return importanceDiff;
-      return a.index - b.index;
-    }
-
-    const importanceDiff = getGameImportanceRank(a.game) - getGameImportanceRank(b.game);
-    if (importanceDiff !== 0) return importanceDiff;
-    const tipoffDiff = getTipoffTimestamp(a.game) - getTipoffTimestamp(b.game);
-    if (tipoffDiff !== 0) return tipoffDiff;
-    return a.index - b.index;
-  });
-  return withIndex.map(({ game }) => game);
-}
-
 function buildMetaChip(text, variant = "") {
   const chip = document.createElement("span");
   chip.className = variant ? `game-chip game-chip--${variant}` : "game-chip";
@@ -1298,19 +1243,6 @@ function buildGameListSection(sectionKey, titleText, games) {
   return section;
 }
 
-function getEmptyGameListMessage(hasGames) {
-  if (!hasGames) {
-    return "No NBA games are on today's board.";
-  }
-  if (gameSearchQuery) {
-    return `No games match "${gameSearchQuery}".`;
-  }
-  if (gameFilter === "favorites") {
-    return "No favorite games match the current filter.";
-  }
-  return "No games match the current filters.";
-}
-
 function renderGameList(games) {
   if (!gamesEl) return;
   lastGames = games || [];
@@ -1323,12 +1255,18 @@ function renderGameList(games) {
     }
   });
 
-  const visibleGames = sortGamesForList(allGames.filter((game) => matchesGameFilter(game) && matchesGameSearch(game)));
+  const visibleGames = sortGamesForList(
+    allGames.filter(
+      (game) => matchesGameFilter(game, gameFilter, favoriteTeams) && matchesGameSearch(game, gameSearchTerm),
+    ),
+    gameSort,
+    favoriteTeams,
+  );
 
   if (!visibleGames.length) {
     const empty = document.createElement("div");
     empty.className = "game-list__empty";
-    empty.textContent = getEmptyGameListMessage(allGames.length > 0);
+    empty.textContent = getEmptyGameListMessage(allGames.length > 0, gameSearchQuery, gameFilter);
     gamesEl.replaceChildren(empty);
     if (selectedGameEl) {
       selectedGameEl.textContent = allGames.length ? selectedLabel : "No games today";
@@ -1347,7 +1285,7 @@ function renderGameList(games) {
   const sectionGames = new Map(sectionOrder.map((key) => [key, []]));
 
   visibleGames.forEach((game) => {
-    if (isFavoriteGame(game)) {
+    if (isFavoriteGame(game, favoriteTeams)) {
       favoriteGames.push(game);
       return;
     }
@@ -1405,13 +1343,6 @@ function buildFavoriteButton(tricode) {
   });
   favButton.appendChild(buildHeartIcon());
   return favButton;
-}
-
-function isFavoriteGame(game) {
-  if (!game) return false;
-  const away = (game.away || {}).tricode;
-  const home = (game.home || {}).tricode;
-  return (away && favoriteTeams.has(away)) || (home && favoriteTeams.has(home));
 }
 
 function applyMatchupTheme(home, away) {
