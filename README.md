@@ -22,6 +22,11 @@ The app starts a local server on a random port and opens a window titled "NBA Li
 For the best experience, run the app in fullscreen.
 This UI is designed for pywebview only; browser usage is not supported.
 
+## Windows build
+- Local EXE builds use the PyInstaller command with `icon.ico` and bundled `nba-live-scoreboard-ui/`.
+- GitHub pushes to `main` run the PyInstaller build directly via `.github/workflows/windows-release.yml` and publish the generated `nba-live-scoreboard.exe` as a GitHub prerelease asset.
+- CI build dependencies are listed in `requirements-build.txt`.
+
 ## Features
 ### Game list and navigation
 - Home page game list split into favorites, live, scheduled, and finished sections.

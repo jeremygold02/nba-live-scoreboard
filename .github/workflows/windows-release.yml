@@ -1,0 +1,64 @@
+name: Build Windows Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Build Windows executable
+        shell: cmd
+        run: |
+          pyinstaller --noconfirm --clean --onefile --noconsole --name "nba-live-scoreboard" --icon "icon.ico" --add-data "nba-live-scoreboard-ui;nba-live-scoreboard-ui" nba-live-scoreboard.py
+          if exist "nba-live-scoreboard.exe" del /f /q "nba-live-scoreboard.exe"
+          if exist "dist\nba-live-scoreboard.exe" move /Y "dist\nba-live-scoreboard.exe" "nba-live-scoreboard.exe"
+
+      - name: Verify executable output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ".\nba-live-scoreboard.exe")) {
+            throw "Expected nba-live-scoreboard.exe was not created."
+          }
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nba-live-scoreboard-windows
+          path: nba-live-scoreboard.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Windows Build #${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          generate_release_notes: true
+          files: nba-live-scoreboard.exe
+          fail_on_unmatched_files: true
+          overwrite_files: true
