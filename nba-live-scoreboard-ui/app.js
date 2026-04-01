@@ -41,6 +41,7 @@ import {
   homeLineupEl,
   homeLineupTitleEl,
   homeTable,
+  lastPlayEl,
   lineupsEl,
   listViewEl,
   notificationsToggleBtn,
@@ -277,6 +278,7 @@ const detailRenderer = createGameDetailRenderer({
   homeLineupEl,
   homeLineupTitleEl,
   lineupsEl,
+  lastPlayEl,
   normalizeStatValue,
   parseUpdated,
   periodsEl,
@@ -300,6 +302,7 @@ const { applyMatchupTheme, clearGameUI, clearMatchupTheme, showGameView, showLis
   homeHeader,
   homeLineupEl,
   homeTable,
+  lastPlayEl,
   lineupsEl,
   listViewEl,
   periodsEl,
@@ -723,6 +726,7 @@ async function refreshDetail(options = {}) {
     detailRenderer.renderTeamCard(homeCard, home);
     detailRenderer.renderCenter(centerCard, state.game);
     detailRenderer.renderDetails(state.game);
+    detailRenderer.renderLastPlay(state.lastPlay, home, away);
     detailRenderer.renderHeaders(home, away);
     detailRenderer.renderPeriods(state.periods, home, away);
     detailRenderer.renderComparison(home, away);

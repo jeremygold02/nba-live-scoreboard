@@ -56,6 +56,7 @@ export function createGameViewController({
   homeHeader,
   homeLineupEl,
   homeTable,
+  lastPlayEl,
   lineupsEl,
   listViewEl,
   periodsEl,
@@ -103,6 +104,10 @@ export function createGameViewController({
     homeCard.innerHTML = "";
     centerCard.innerHTML = "";
     detailsEl.innerHTML = "";
+    if (lastPlayEl) {
+      lastPlayEl.innerHTML = "";
+      lastPlayEl.hidden = true;
+    }
     periodsEl.innerHTML = "";
     if (comparisonBodyEl) {
       comparisonBodyEl.innerHTML = "";

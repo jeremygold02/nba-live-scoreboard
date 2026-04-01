@@ -4,6 +4,7 @@ export const awayCard = document.getElementById("away-card");
 export const homeCard = document.getElementById("home-card");
 export const centerCard = document.getElementById("game-center");
 export const detailsEl = document.getElementById("game-details");
+export const lastPlayEl = document.getElementById("last-play");
 export const periodsToggleBtn = document.getElementById("periods-toggle");
 export const periodsEl = document.getElementById("periods");
 export const comparisonEl = document.getElementById("comparison");

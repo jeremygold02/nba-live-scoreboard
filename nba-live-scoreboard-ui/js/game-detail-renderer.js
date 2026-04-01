@@ -26,6 +26,7 @@ export function createGameDetailRenderer({
   homeHeader,
   homeLineupEl,
   homeLineupTitleEl,
+  lastPlayEl,
   lineupsEl,
   normalizeStatValue,
   parseUpdated,
@@ -188,6 +189,81 @@ export function createGameDetailRenderer({
     }
 
     detailsEl.textContent = [arena, start].filter(Boolean).join(" | ");
+  }
+
+  function buildLastPlayChip(text, variant = "") {
+    const chip = document.createElement("span");
+    chip.className = variant ? `last-play__chip last-play__chip--${variant}` : "last-play__chip";
+    chip.textContent = text;
+    return chip;
+  }
+
+  function formatLastPlayPeriod(period) {
+    const value = Number(period);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    return value <= 4 ? `Q${value}` : `OT${value - 4}`;
+  }
+
+  function renderLastPlay(lastPlay, home, away) {
+    if (!lastPlayEl) return;
+    const description = lastPlay && lastPlay.description ? String(lastPlay.description).trim() : "";
+    if (!description) {
+      lastPlayEl.hidden = true;
+      lastPlayEl.innerHTML = "";
+      return;
+    }
+
+    const awayCode = (away || {}).tricode || "Away";
+    const homeCode = (home || {}).tricode || "Home";
+    lastPlayEl.hidden = false;
+    lastPlayEl.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "last-play__head";
+
+    const title = document.createElement("div");
+    title.className = "last-play__title";
+    title.textContent = "Last Play";
+
+    const meta = document.createElement("div");
+    meta.className = "last-play__meta";
+
+    if (lastPlay.teamTricode) {
+      meta.appendChild(buildLastPlayChip(lastPlay.teamTricode, "team"));
+    }
+
+    const playClock = formatClock(lastPlay.clock);
+    if (playClock) {
+      meta.appendChild(buildLastPlayChip(playClock));
+    }
+
+    const periodLabel = formatLastPlayPeriod(lastPlay.period);
+    if (periodLabel) {
+      meta.appendChild(buildLastPlayChip(periodLabel));
+    }
+
+    if (Number.isFinite(lastPlay.scoreAway) && Number.isFinite(lastPlay.scoreHome)) {
+      meta.appendChild(buildLastPlayChip(`${awayCode} ${lastPlay.scoreAway} - ${lastPlay.scoreHome} ${homeCode}`, "score"));
+    }
+
+    if (lastPlay.state === "stale") {
+      meta.appendChild(buildLastPlayChip("Cached", "stale"));
+    }
+
+    head.append(title, meta);
+
+    const body = document.createElement("div");
+    body.className = "last-play__description";
+    body.textContent = description;
+
+    lastPlayEl.append(head, body);
+
+    if (lastPlay.state === "stale" && lastPlay.message) {
+      const note = document.createElement("div");
+      note.className = "last-play__note";
+      note.textContent = lastPlay.message;
+      lastPlayEl.appendChild(note);
+    }
   }
 
   function cell(value) {
@@ -754,6 +830,7 @@ export function createGameDetailRenderer({
     renderDetails,
     renderHeaders,
     renderLineups,
+    renderLastPlay,
     renderPeriods,
     renderTeamCard,
     renderTeamTable,

@@ -36,7 +36,7 @@ BOX_CACHE = {}
 BOX_BACKOFF = {}
 MAX_BACKOFF_SECONDS = 60
 PBP_BACKOFF = {}
-ON_COURT_CACHE = {}
+PBP_CACHE = {}
 REQUEST_HEALTH = {}
 FAVORITES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "favorites.json"
 UI_PREFERENCES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "ui-preferences.json"
@@ -407,24 +407,120 @@ def _on_court_result(data=None, state="missing", message=None):
     }
 
 
-def _build_on_court(game_id, home, away):
-    if not game_id or not home or not away:
-        return _on_court_result()
-    home_players = home.get("players") or []
-    away_players = away.get("players") or []
-    if not home_players or not away_players:
-        return _on_court_result()
+def _last_play_result(data=None, state="missing", message=None):
+    return {
+        "data": data,
+        "state": state,
+        "message": message,
+    }
 
-    home_on = _starter_ids(home_players)
-    away_on = _starter_ids(away_players)
+
+def _normalize_last_play(action):
+    description = (action.get("description") or "").strip()
+    if not description:
+        return None
+    return {
+        "description": description,
+        "actionType": action.get("actionType") or "",
+        "subType": action.get("subType") or "",
+        "teamTricode": action.get("teamTricode") or "",
+        "clock": action.get("clock") or "",
+        "period": _coerce_int(action.get("period")),
+        "scoreHome": _coerce_int(action.get("scoreHome")),
+        "scoreAway": _coerce_int(action.get("scoreAway")),
+    }
+
+
+def _is_meaningful_last_play(action):
+    action_type = (action.get("actionType") or "").strip().lower()
+    descriptor = (action.get("descriptor") or "").strip().lower()
+    if action_type in {"substitution", "instantreplay"}:
+        return False
+    if descriptor in {"startperiod", "endperiod"}:
+        return False
+    return True
+
+
+def _extract_last_play(actions):
+    fallback = None
+    for action in reversed(actions or []):
+        normalized = _normalize_last_play(action)
+        if not normalized:
+            continue
+        if fallback is None:
+            fallback = normalized
+        if _is_meaningful_last_play(action):
+            return normalized
+    return fallback
+
+
+def _serialize_last_play(last_play_state):
+    data = (last_play_state or {}).get("data")
+    if not data:
+        return None
+    return {
+        **data,
+        "state": (last_play_state or {}).get("state") or "fresh",
+        "message": (last_play_state or {}).get("message"),
+    }
+
+
+def _build_playbyplay_state(game_id, home, away, include_on_court=False):
+    if not game_id:
+        return {
+            "onCourt": _on_court_result(),
+            "lastPlay": _last_play_result(),
+        }
+
+    home_players = (home or {}).get("players") or []
+    away_players = (away or {}).get("players") or []
+    can_build_on_court = bool(include_on_court and home_players and away_players)
+    home_on = _starter_ids(home_players) if can_build_on_court else set()
+    away_on = _starter_ids(away_players) if can_build_on_court else set()
+
+    cached = PBP_CACHE.get(game_id) or {}
+
+    def _cached_playbyplay(on_court_message, last_play_message):
+        cached_on_court = cached.get("onCourt")
+        cached_last_play = cached.get("lastPlay")
+        if can_build_on_court and cached_on_court:
+            on_court_state = _on_court_result(
+                cached_on_court,
+                state="stale",
+                message=on_court_message,
+            )
+        elif can_build_on_court:
+            on_court_state = _on_court_result(
+                None,
+                state="missing",
+                message="On-court lineups are unavailable because play-by-play data could not be loaded.",
+            )
+        else:
+            on_court_state = _on_court_result()
+
+        if cached_last_play:
+            last_play_state = _last_play_result(
+                cached_last_play,
+                state="stale",
+                message=last_play_message,
+            )
+        else:
+            last_play_state = _last_play_result(
+                None,
+                state="missing",
+                message="Last play is unavailable because play-by-play data could not be loaded.",
+            )
+
+        return {
+            "onCourt": on_court_state,
+            "lastPlay": last_play_state,
+        }
 
     backoff = _get_backoff(game_id, PBP_BACKOFF)
-    cached = ON_COURT_CACHE.get(game_id)
-    if backoff and cached:
-        return _on_court_result(
-            cached,
-            state="stale",
-            message="Using cached on-court lineups during play-by-play backoff.",
+    if backoff and (cached.get("onCourt") or cached.get("lastPlay")):
+        return _cached_playbyplay(
+            "Using cached on-court lineups during play-by-play backoff.",
+            "Showing the last cached play during play-by-play backoff.",
         )
 
     try:
@@ -440,22 +536,18 @@ def _build_on_court(game_id, home, away):
     except Exception:
         LOG.exception("playbyplay error")
         _set_backoff(game_id, PBP_BACKOFF)
-        if cached:
-            return _on_court_result(
-                cached,
-                state="stale",
-                message="Using cached on-court lineups because play-by-play is unavailable.",
-            )
-        return _on_court_result(
-            None,
-            state="missing",
-            message="On-court lineups are unavailable because play-by-play data could not be loaded.",
+        return _cached_playbyplay(
+            "Using cached on-court lineups because play-by-play is unavailable.",
+            "Showing the last cached play because play-by-play is unavailable.",
         )
 
     actions = (payload.get("game") or {}).get("actions") or []
     if actions:
         actions = sorted(actions, key=lambda item: item.get("actionNumber") or 0)
 
+    last_play = _extract_last_play(actions)
+
+    if can_build_on_court and actions:
         home_id = home.get("id")
         away_id = away.get("id")
         home_tricode = home.get("tricode")
@@ -481,22 +573,43 @@ def _build_on_court(game_id, home, away):
             elif subtype == "out":
                 target.discard(person_id)
 
-    if not home_on and not away_on:
-        if cached:
-            return _on_court_result(
-                cached,
-                state="stale",
-                message="Using last known on-court lineups because live substitutions are unavailable.",
-            )
-        return _on_court_result(
+    cache_entry = dict(cached)
+    if can_build_on_court and (home_on or away_on):
+        cache_entry["onCourt"] = {"home": sorted(home_on), "away": sorted(away_on)}
+    if last_play:
+        cache_entry["lastPlay"] = last_play
+    if cache_entry:
+        PBP_CACHE[game_id] = cache_entry
+
+    if can_build_on_court and (home_on or away_on):
+        on_court_state = _on_court_result(
+            {"home": sorted(home_on), "away": sorted(away_on)},
+            state="fresh",
+        )
+    elif can_build_on_court and cached.get("onCourt"):
+        on_court_state = _on_court_result(
+            cached.get("onCourt"),
+            state="stale",
+            message="Using last known on-court lineups because live substitutions are unavailable.",
+        )
+    elif can_build_on_court:
+        on_court_state = _on_court_result(
             None,
             state="missing",
             message="On-court lineups are unavailable for this game right now.",
         )
+    else:
+        on_court_state = _on_court_result()
 
-    result = {"home": sorted(home_on), "away": sorted(away_on)}
-    ON_COURT_CACHE[game_id] = result
-    return _on_court_result(result, state="fresh")
+    if last_play:
+        last_play_state = _last_play_result(last_play, state="fresh")
+    else:
+        last_play_state = _last_play_result()
+
+    return {
+        "onCourt": on_court_state,
+        "lastPlay": last_play_state,
+    }
 
 
 def _build_player(player, team_stats, team_minutes):
@@ -1030,6 +1143,7 @@ def build_state(game_id=None):
             "dataStatus": None,
             "game": base_game,
             "games": summaries,
+            "lastPlay": None,
             "periods": [],
             "home": {**home_fallback, "stats": {}, "players": [], "onCourt": []},
             "away": {**away_fallback, "stats": {}, "players": [], "onCourt": []},
@@ -1042,7 +1156,9 @@ def build_state(game_id=None):
         LOG.info("backoff active for %s; using cached boxscore", base_game["gameId"])
         home = cache.get("home", {**home_fallback, "stats": {}, "players": []})
         away = cache.get("away", {**away_fallback, "stats": {}, "players": []})
-        on_court_state = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else _on_court_result()
+        playbyplay_state = _build_playbyplay_state(base_game["gameId"], home, away, include_on_court=game_status == 2)
+        on_court_state = playbyplay_state.get("onCourt") or _on_court_result()
+        last_play = _serialize_last_play(playbyplay_state.get("lastPlay"))
         home, away = _apply_on_court_state(home, away, on_court_state)
         issues = []
         if on_court_state.get("message"):
@@ -1060,6 +1176,7 @@ def build_state(game_id=None):
             ),
             "game": base_game,
             "games": summaries,
+            "lastPlay": last_play,
             "periods": cache.get("periods", []),
             "home": home,
             "away": away,
@@ -1087,7 +1204,9 @@ def build_state(game_id=None):
         if cache:
             home = cache.get("home", {**home_fallback, "stats": {}, "players": []})
             away = cache.get("away", {**away_fallback, "stats": {}, "players": []})
-            on_court_state = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else _on_court_result()
+            playbyplay_state = _build_playbyplay_state(base_game["gameId"], home, away, include_on_court=game_status == 2)
+            on_court_state = playbyplay_state.get("onCourt") or _on_court_result()
+            last_play = _serialize_last_play(playbyplay_state.get("lastPlay"))
             home, away = _apply_on_court_state(home, away, on_court_state)
             issues = []
             if on_court_state.get("message"):
@@ -1105,6 +1224,7 @@ def build_state(game_id=None):
                 ),
                 "game": base_game,
                 "games": summaries,
+                "lastPlay": last_play,
                 "periods": cache.get("periods", []),
                 "home": home,
                 "away": away,
@@ -1147,7 +1267,9 @@ def build_state(game_id=None):
             "periods": periods,
             "dataUpdated": updated,
         }
-    on_court_state = _build_on_court(base_game["gameId"], home, away) if game_status == 2 else _on_court_result()
+    playbyplay_state = _build_playbyplay_state(base_game["gameId"], home, away, include_on_court=game_status == 2)
+    on_court_state = playbyplay_state.get("onCourt") or _on_court_result()
+    last_play = _serialize_last_play(playbyplay_state.get("lastPlay"))
     home, away = _apply_on_court_state(home, away, on_court_state)
 
     data_status = None
@@ -1175,6 +1297,7 @@ def build_state(game_id=None):
         "dataStatus": data_status,
         "game": base_game,
         "games": summaries,
+        "lastPlay": last_play,
         "periods": periods,
         "home": home,
         "away": away,
