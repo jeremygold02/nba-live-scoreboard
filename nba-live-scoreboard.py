@@ -415,15 +415,25 @@ def _last_play_result(data=None, state="missing", message=None):
     }
 
 
-def _normalize_last_play(action):
+def _normalize_last_play(action, home=None, away=None):
     description = (action.get("description") or "").strip()
     if not description:
         return None
+    possession_team_id = _coerce_int(action.get("possession"))
+    home_id = _coerce_int((home or {}).get("id"))
+    away_id = _coerce_int((away or {}).get("id"))
+    possession_tricode = ""
+    if possession_team_id is not None:
+        if home_id is not None and possession_team_id == home_id:
+            possession_tricode = (home or {}).get("tricode") or ""
+        elif away_id is not None and possession_team_id == away_id:
+            possession_tricode = (away or {}).get("tricode") or ""
     return {
         "description": description,
         "actionType": action.get("actionType") or "",
         "subType": action.get("subType") or "",
         "teamTricode": action.get("teamTricode") or "",
+        "possessionTricode": possession_tricode,
         "clock": action.get("clock") or "",
         "period": _coerce_int(action.get("period")),
         "scoreHome": _coerce_int(action.get("scoreHome")),
@@ -441,10 +451,10 @@ def _is_meaningful_last_play(action):
     return True
 
 
-def _extract_last_play(actions):
+def _extract_last_play(actions, home=None, away=None):
     fallback = None
     for action in reversed(actions or []):
-        normalized = _normalize_last_play(action)
+        normalized = _normalize_last_play(action, home, away)
         if not normalized:
             continue
         if fallback is None:
@@ -545,7 +555,7 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
     if actions:
         actions = sorted(actions, key=lambda item: item.get("actionNumber") or 0)
 
-    last_play = _extract_last_play(actions)
+    last_play = _extract_last_play(actions, home, away)
 
     if can_build_on_court and actions:
         home_id = home.get("id")

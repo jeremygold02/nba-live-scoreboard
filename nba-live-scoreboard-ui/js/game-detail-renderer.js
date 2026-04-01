@@ -204,7 +204,7 @@ export function createGameDetailRenderer({
     return value <= 4 ? `Q${value}` : `OT${value - 4}`;
   }
 
-  function renderLastPlay(lastPlay, home, away) {
+  function renderLastPlay(lastPlay) {
     if (!lastPlayEl) return;
     const description = lastPlay && lastPlay.description ? String(lastPlay.description).trim() : "";
     if (!description) {
@@ -213,8 +213,6 @@ export function createGameDetailRenderer({
       return;
     }
 
-    const awayCode = (away || {}).tricode || "Away";
-    const homeCode = (home || {}).tricode || "Home";
     lastPlayEl.hidden = false;
     lastPlayEl.innerHTML = "";
 
@@ -228,8 +226,9 @@ export function createGameDetailRenderer({
     const meta = document.createElement("div");
     meta.className = "last-play__meta";
 
-    if (lastPlay.teamTricode) {
-      meta.appendChild(buildLastPlayChip(lastPlay.teamTricode, "team"));
+    const possessionLabel = lastPlay.possessionTricode || lastPlay.teamTricode;
+    if (possessionLabel) {
+      meta.appendChild(buildLastPlayChip(`${possessionLabel} Possession`, "team"));
     }
 
     const playClock = formatClock(lastPlay.clock);
@@ -240,10 +239,6 @@ export function createGameDetailRenderer({
     const periodLabel = formatLastPlayPeriod(lastPlay.period);
     if (periodLabel) {
       meta.appendChild(buildLastPlayChip(periodLabel));
-    }
-
-    if (Number.isFinite(lastPlay.scoreAway) && Number.isFinite(lastPlay.scoreHome)) {
-      meta.appendChild(buildLastPlayChip(`${awayCode} ${lastPlay.scoreAway} - ${lastPlay.scoreHome} ${homeCode}`, "score"));
     }
 
     if (lastPlay.state === "stale") {

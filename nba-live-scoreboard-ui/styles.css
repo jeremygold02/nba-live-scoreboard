@@ -875,12 +875,14 @@ body {
 }
 
 .last-play {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015));
+  background:
+    radial-gradient(circle at top left, rgba(230, 195, 104, 0.09), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
   border: 1px solid var(--line);
   border-radius: 18px;
-  padding: 14px 16px;
+  padding: 15px 16px;
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .last-play__head {
@@ -896,6 +898,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 2px;
   color: var(--text-muted);
+  font-weight: 600;
 }
 
 .last-play__meta {
@@ -920,13 +923,9 @@ body {
 }
 
 .last-play__chip--team {
-  color: var(--text);
-}
-
-.last-play__chip--score {
-  color: #d8ebff;
-  border-color: rgba(142, 195, 240, 0.25);
-  background: rgba(46, 122, 199, 0.1);
+  color: #fff0c3;
+  border-color: rgba(230, 195, 104, 0.28);
+  background: rgba(230, 195, 104, 0.11);
 }
 
 .last-play__chip--stale {
@@ -936,14 +935,18 @@ body {
 }
 
 .last-play__description {
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 15px;
+  line-height: 1.55;
   color: var(--text);
+  font-weight: 600;
+  text-wrap: pretty;
+  max-width: 70ch;
 }
 
 .last-play__note {
   font-size: 11px;
   color: var(--text-muted);
+  line-height: 1.45;
 }
 
 .comparison {
