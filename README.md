@@ -24,7 +24,7 @@ This UI is designed for pywebview only; browser usage is not supported.
 
 ## Windows build
 - Local EXE builds use the PyInstaller command with `icon.ico` and bundled `nba-live-scoreboard-ui/`.
-- GitHub pushes to `main` run the PyInstaller build directly via `.github/workflows/windows-release.yml` and publish the generated `nba-live-scoreboard.exe` as a GitHub prerelease asset.
+- GitHub pushes to `main` run the PyInstaller build directly via `.github/workflows/windows-release.yml` and publish the generated `nba-live-scoreboard.exe` as a GitHub release asset.
 - CI build dependencies are listed in `requirements-build.txt`.
 
 ## Features

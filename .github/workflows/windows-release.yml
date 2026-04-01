@@ -51,13 +51,13 @@ jobs:
           path: nba-live-scoreboard.exe
           if-no-files-found: error
 
-      - name: Publish GitHub prerelease
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Windows Build #${{ github.run_number }}
+          name: NBA Live Scoreboard v${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          prerelease: true
+          prerelease: false
           generate_release_notes: true
           files: nba-live-scoreboard.exe
           fail_on_unmatched_files: true
