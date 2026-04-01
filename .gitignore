@@ -3,6 +3,7 @@ __pycache__/
 nba-live-scoreboard-ui/resources/favorites.json
 build/
 dist/
+.venv-build/
 *.exe
 *.bat
 *.spec
