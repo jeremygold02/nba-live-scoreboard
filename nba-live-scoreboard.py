@@ -482,6 +482,10 @@ def _normalize_inline_play_stats(text):
 
 def _normalize_shot_text(text):
     value = re.sub(r"\s+", " ", str(text or "")).strip()
+    value = re.sub(r"(\d+)'", r"\1-foot", value)
+    value = re.sub(r"\b(\d+-foot)\s+3PT\s+pullup\b", r"\1 pull-up three-pointer", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b(\d+-foot)\s+3PT\s+step back\b", r"\1 step-back three-pointer", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b(\d+-foot)\s+3PT\b(?:\s+(?:driving|floating|bank|running|cutting))+", r"\1 three-pointer", value, flags=re.IGNORECASE)
     value = re.sub(r"\b3PT pullup\b", "pull-up three-pointer", value, flags=re.IGNORECASE)
     value = re.sub(r"\b3PT step back\b", "step-back three-pointer", value, flags=re.IGNORECASE)
     value = re.sub(r"\b3PT\b", "three-pointer", value, flags=re.IGNORECASE)
@@ -497,7 +501,6 @@ def _normalize_shot_text(text):
     value = re.sub(r"\bstep-back Shot\b", "step-back jumper", value, flags=re.IGNORECASE)
     value = re.sub(r"\bShot\b", "jumper", value, flags=re.IGNORECASE)
     value = re.sub(r"\bthree-pointer jumper\b", "three-pointer", value, flags=re.IGNORECASE)
-    value = re.sub(r"(\d+)'", r"\1-foot", value)
     value = re.sub(r"\(([^()]+?)\s+\d+\s+AST\)", r"(\1 assists)", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+\(", " (", value)
     return _normalize_inline_play_stats(value)
@@ -516,7 +519,7 @@ def _format_rebound_totals(description):
 def _replace_player_prefix(text, player_label, replacement):
     if not player_label:
         return replacement.strip()
-    pattern = rf"^{re.escape(player_label)}\b"
+    pattern = rf"^{re.escape(player_label)}(?=\s|$)"
     if re.search(pattern, text):
         return re.sub(pattern, replacement, text, count=1)
     return f"{replacement} {text}".strip()

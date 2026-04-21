@@ -240,9 +240,13 @@ export function createGameDetailRenderer({
 
     const awaySide = document.createElement("span");
     awaySide.className = "last-play__score-side";
-    awaySide.appendChild(document.createTextNode(`${awayLabel} `));
+    const awayLabelEl = document.createElement("span");
+    awayLabelEl.className = "last-play__score-label";
+    awayLabelEl.textContent = awayLabel;
+    awaySide.appendChild(awayLabelEl);
 
     const awayScoreEl = document.createElement(scoringTeam === awayLabel.toUpperCase() ? "strong" : "span");
+    awayScoreEl.className = "last-play__score-value";
     awayScoreEl.textContent = String(awayScore);
     awaySide.appendChild(awayScoreEl);
     chip.appendChild(awaySide);
@@ -255,9 +259,13 @@ export function createGameDetailRenderer({
     const homeSide = document.createElement("span");
     homeSide.className = "last-play__score-side";
     const homeScoreEl = document.createElement(scoringTeam === homeLabel.toUpperCase() ? "strong" : "span");
+    homeScoreEl.className = "last-play__score-value";
     homeScoreEl.textContent = String(homeScore);
     homeSide.appendChild(homeScoreEl);
-    homeSide.appendChild(document.createTextNode(` ${homeLabel}`));
+    const homeLabelEl = document.createElement("span");
+    homeLabelEl.className = "last-play__score-label";
+    homeLabelEl.textContent = homeLabel;
+    homeSide.appendChild(homeLabelEl);
     chip.appendChild(homeSide);
 
     return chip;
