@@ -241,7 +241,7 @@ export function createGameDetailRenderer({
 
     const title = document.createElement("div");
     title.className = "last-play__title";
-    title.textContent = "Recent Plays";
+    title.textContent = "Play-by-Play";
 
     const meta = document.createElement("div");
     meta.className = "last-play__meta";
