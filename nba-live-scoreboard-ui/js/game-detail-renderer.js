@@ -198,6 +198,18 @@ export function createGameDetailRenderer({
     return chip;
   }
 
+  function isMadeScoringPlay(play) {
+    const actionType = play && play.actionType ? String(play.actionType).trim().toLowerCase() : "";
+    const description = play && play.description ? String(play.description).trim().toLowerCase() : "";
+    if (actionType === "2pt" || actionType === "3pt") {
+      return !description.includes("missed");
+    }
+    if (actionType === "freethrow") {
+      return description.includes(" makes free throw") || description.includes(" made free throw");
+    }
+    return false;
+  }
+
   function formatLastPlayPeriod(period) {
     const value = Number(period);
     if (!Number.isFinite(value) || value <= 0) return "";
@@ -213,15 +225,42 @@ export function createGameDetailRenderer({
     return playClock || periodLabel || "";
   }
 
-  function formatRecentPlayScore(play, homeTeam, awayTeam) {
+  function buildRecentPlayScoreChip(play, homeTeam, awayTeam) {
     const homeScore = Number(play && play.scoreHome);
     const awayScore = Number(play && play.scoreAway);
     if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) {
-      return "";
+      return null;
     }
     const awayLabel = awayTeam && awayTeam.tricode ? String(awayTeam.tricode).trim() : "Away";
     const homeLabel = homeTeam && homeTeam.tricode ? String(homeTeam.tricode).trim() : "Home";
-    return `${awayLabel} ${awayScore} - ${homeLabel} ${homeScore}`;
+    const scoringTeam = isMadeScoringPlay(play) && play && play.teamTricode ? String(play.teamTricode).trim().toUpperCase() : "";
+
+    const chip = document.createElement("span");
+    chip.className = "last-play__chip last-play__chip--score";
+
+    const awayLabelEl = document.createElement("span");
+    awayLabelEl.textContent = awayLabel;
+    chip.appendChild(awayLabelEl);
+
+    chip.appendChild(document.createTextNode(" "));
+
+    const awayScoreEl = document.createElement(scoringTeam === awayLabel.toUpperCase() ? "strong" : "span");
+    awayScoreEl.textContent = String(awayScore);
+    chip.appendChild(awayScoreEl);
+
+    chip.appendChild(document.createTextNode(" - "));
+
+    const homeScoreEl = document.createElement(scoringTeam === homeLabel.toUpperCase() ? "strong" : "span");
+    homeScoreEl.textContent = String(homeScore);
+    chip.appendChild(homeScoreEl);
+
+    chip.appendChild(document.createTextNode(" "));
+
+    const homeLabelEl = document.createElement("span");
+    homeLabelEl.textContent = homeLabel;
+    chip.appendChild(homeLabelEl);
+
+    return chip;
   }
 
   function renderRecentPlays(recentPlays, homeTeam, awayTeam) {
@@ -279,9 +318,9 @@ export function createGameDetailRenderer({
       if (showPossession && possessionLabel && possessionLabel !== actionTeamLabel) {
         rowMeta.appendChild(buildLastPlayChip(`${possessionLabel} Possession`));
       }
-      const scoreLabel = formatRecentPlayScore(play, homeTeam, awayTeam);
-      if (scoreLabel) {
-        rowMeta.appendChild(buildLastPlayChip(scoreLabel, "score"));
+      const scoreChip = buildRecentPlayScoreChip(play, homeTeam, awayTeam);
+      if (scoreChip) {
+        rowMeta.appendChild(scoreChip);
       }
 
       const description = document.createElement("div");

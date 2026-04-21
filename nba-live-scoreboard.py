@@ -415,61 +415,221 @@ def _recent_plays_result(data=None, state="missing", message=None):
     }
 
 
-def _format_recent_play_description(action, team_tricode=""):
+def _team_display_name(team):
+    if not team:
+        return ""
+    name = str(team.get("name") or team.get("teamName") or "").strip()
+    if name:
+        return name
+    city = str(team.get("city") or team.get("teamCity") or "").strip()
+    return city
+
+
+def _resolve_action_team(home, away, team_id=None, team_tricode=""):
+    code = str(team_tricode or "").strip().upper()
+    numeric_team_id = _coerce_int(team_id)
+    home_id = _coerce_int((home or {}).get("id") or (home or {}).get("teamId"))
+    away_id = _coerce_int((away or {}).get("id") or (away or {}).get("teamId"))
+    home_code = str((home or {}).get("tricode") or (home or {}).get("teamTricode") or "").strip().upper()
+    away_code = str((away or {}).get("tricode") or (away or {}).get("teamTricode") or "").strip().upper()
+
+    if numeric_team_id is not None:
+        if home_id is not None and numeric_team_id == home_id:
+            return home or {}
+        if away_id is not None and numeric_team_id == away_id:
+            return away or {}
+    if code:
+        if code == home_code:
+            return home or {}
+        if code == away_code:
+            return away or {}
+    return {}
+
+
+def _ordinal_label(value):
+    number = _coerce_int(value)
+    if number is None or number <= 0:
+        return ""
+    if 10 <= (number % 100) <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
+def _normalize_inline_play_stats(text):
+    value = str(text or "")
+    value = re.sub(r"\bPTS\b", "pts", value)
+    value = re.sub(r"\b1 pts\b", "1 pt", value)
+    value = re.sub(r"\bAST\b", "ast", value)
+    value = re.sub(r"\bSTL\b", "stl", value)
+    value = re.sub(r"\bBLK\b", "blk", value)
+    return value
+
+
+def _normalize_shot_text(text):
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    value = re.sub(r"\b3PT pullup\b", "pull-up three point shot", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b3PT step back\b", "step-back three point shot", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b3PT\b", "three point shot", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bstep back\b", "step-back", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bpullup\b", "pull-up", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bfinger roll\b", "finger-roll", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bJump Shot\b", "jump shot", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bLayup\b", "layup", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bDUNK\b", "dunk", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bDunk\b", "dunk", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bShot\b", "shot", value, flags=re.IGNORECASE)
+    value = re.sub(r"(\d+)'", r"\1-foot", value)
+    value = re.sub(r"\(([^()]+?)\s+\d+\s+AST\)", r"(\1 assists)", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+\(", " (", value)
+    return _normalize_inline_play_stats(value)
+
+
+def _format_rebound_totals(description):
+    match = re.search(r"\(Off:(\d+)\s+Def:(\d+)\)", description)
+    if not match:
+        return ""
+    off = int(match.group(1))
+    deff = int(match.group(2))
+    total = off + deff
+    return f"({total} rebound{'s' if total != 1 else ''})"
+
+
+def _replace_player_prefix(text, player_label, replacement):
+    if not player_label:
+        return replacement.strip()
+    pattern = rf"^{re.escape(player_label)}\b"
+    if re.search(pattern, text):
+        return re.sub(pattern, replacement, text, count=1)
+    return f"{replacement} {text}".strip()
+
+
+def _normalize_foul_shot_suffixes(text):
+    def replace(match):
+        shooter = str(match.group(1) or "").strip()
+        attempts = str(match.group(2) or "").strip()
+        if not shooter or not attempts:
+            return match.group(0)
+        attempt_count = _coerce_int(attempts)
+        shot_label = "free throw" if attempt_count == 1 else "free throws"
+        return f"({shooter} to shoot {attempts} {shot_label})"
+
+    return re.sub(r"\(([^()]+?)\s+(\d+)\s+FT\)", replace, text, flags=re.IGNORECASE)
+
+
+def _format_recent_play_description(action, home=None, away=None):
     description = re.sub(r"\s+", " ", (action.get("description") or "")).strip()
     if not description:
         return ""
 
     action_type = (action.get("actionType") or "").strip().lower()
     sub_type = (action.get("subType") or "").strip().lower()
-    team_label = (team_tricode or "").strip().upper()
+    team_tricode = str(action.get("teamTricode") or "").strip().upper()
+    action_team = _resolve_action_team(home, away, action.get("teamId"), team_tricode)
+    team_display_name = _team_display_name(action_team)
     upper_description = description.upper()
-
-    if team_label and upper_description.startswith("TEAM "):
-        if action_type == "rebound" and sub_type in {"offensive", "defensive"}:
-            return f"{team_label} {sub_type} rebound"
-        description = f"{team_label} {description[5:].strip()}"
-
-    if team_label and " TEAM TURNOVER" in upper_description:
-        description = re.sub(r"\bTEAM TURNOVER\b", "turnover", description, count=1, flags=re.IGNORECASE)
+    player_label = str(action.get("playerNameI") or "").strip()
+    if not player_label:
+        player_label = str(action.get("playerName") or "").strip()
 
     if upper_description == "PERIOD END":
-        return "End of period"
+        period = _coerce_int(action.get("period"))
+        if period is None or period <= 0:
+            return "End of period"
+        if period <= 4:
+            return f"End of {_ordinal_label(period)} quarter"
+        return f"End of {_ordinal_label(period - 4)} overtime"
     if upper_description == "GAME END":
-        return "End of game"
+        return "Final"
 
-    if action_type == "timeout" and team_label and upper_description == f"{team_label} TIMEOUT":
-        return f"{team_label} timeout"
+    if action_type == "jumpball":
+        description = re.sub(r"^Jump Ball\b", "Jump ball", description, count=1, flags=re.IGNORECASE)
+        return description.replace(": Tip to", ", tip to")
+
+    if action_type == "timeout" and team_display_name:
+        return f"{team_display_name} timeout"
+    if action_type == "heave" and team_display_name:
+        return f"{team_display_name} heave"
+
+    if upper_description.startswith("TEAM ") and team_display_name:
+        if action_type == "rebound" and sub_type in {"offensive", "defensive"}:
+            return f"{team_display_name} {sub_type} rebound"
+        description = f"{team_display_name} {description[5:].strip()}"
+
+    if " TEAM TURNOVER" in upper_description and team_display_name:
+        if "SHOT CLOCK" in upper_description:
+            return f"{team_display_name} turnover: shot-clock violation"
+        if "5-SECOND-VIOLATION" in upper_description:
+            return f"{team_display_name} turnover: 5-second violation"
+        description = description.replace("Team TURNOVER", "turnover")
+
+    if action_type == "freethrow":
+        if upper_description.startswith("MISS "):
+            shot_text = re.sub(r"^MISS\s+", "", description, count=1, flags=re.IGNORECASE)
+            shot_text = re.sub(r"\bFree Throw\b", "free throw", shot_text, flags=re.IGNORECASE)
+            return _normalize_inline_play_stats(_replace_player_prefix(shot_text, player_label, f"{player_label} misses".strip()))
+        shot_text = re.sub(r"\bFree Throw\b", "free throw", description, flags=re.IGNORECASE)
+        return _normalize_inline_play_stats(_replace_player_prefix(shot_text, player_label, f"{player_label} makes".strip()))
+
+    if action_type in {"2pt", "3pt"}:
+        if upper_description.startswith("MISS "):
+            shot_text = re.sub(r"^MISS\s+", "", description, count=1, flags=re.IGNORECASE)
+            shot_text = _normalize_shot_text(shot_text)
+            return _replace_player_prefix(shot_text, player_label, f"{player_label} misses".strip())
+        shot_text = _normalize_shot_text(description)
+        return _replace_player_prefix(shot_text, player_label, f"{player_label} makes".strip())
 
     if action_type == "rebound" and sub_type in {"offensive", "defensive"}:
-        description = re.sub(
-            r"\bREBOUND\b",
-            f"{sub_type} rebound",
-            description,
-            count=1,
-            flags=re.IGNORECASE,
-        )
+        totals_text = _format_rebound_totals(description)
+        subject = player_label or team_display_name or team_tricode
+        if subject:
+            base = f"{subject} {sub_type} rebound"
+            return f"{base} {totals_text}".strip()
 
-    description = re.sub(r"^MISS\b", "Missed", description, count=1, flags=re.IGNORECASE)
-    description = re.sub(r"\bJump Shot\b", "jump shot", description, flags=re.IGNORECASE)
-    description = re.sub(r"\bREBOUND\b", "rebound", description, flags=re.IGNORECASE)
+    if action_type == "foul":
+        description = re.sub(r"\bloose ball personal FOUL\b", "loose-ball foul", description, flags=re.IGNORECASE)
+        description = re.sub(r"\btake personal FOUL\b", "take foul", description, flags=re.IGNORECASE)
+        description = re.sub(r"\bshooting personal FOUL\b", "shooting foul", description, flags=re.IGNORECASE)
+        description = re.sub(r"\bpersonal FOUL\b", "personal foul", description, flags=re.IGNORECASE)
+        description = re.sub(r"\boffensive FOUL\b", "offensive foul", description, flags=re.IGNORECASE)
+        description = _normalize_foul_shot_suffixes(description)
+        return _normalize_inline_play_stats(description)
+
+    if action_type == "turnover":
+        if player_label:
+            details = re.sub(rf"^{re.escape(player_label)}\s*", "", description, count=1).strip()
+            details = re.sub(r"\bTURNOVER\b", "", details, count=1, flags=re.IGNORECASE).strip()
+            details = re.sub(r"\bout-of-bounds\b", "out of bounds", details, flags=re.IGNORECASE)
+            details = re.sub(r"\b5-second-violation\b", "5-second violation", details, flags=re.IGNORECASE)
+            stats_match = re.search(r"\([^)]*\)\s*$", details)
+            stats_text = ""
+            if stats_match:
+                stats_text = _normalize_inline_play_stats(stats_match.group(0))
+                details = details[:stats_match.start()].strip(" :;,-")
+            if details:
+                return f"{player_label} turnover: {details}{(' ' + stats_text) if stats_text else ''}".strip()
+            return f"{player_label} turnover{(' ' + stats_text) if stats_text else ''}".strip()
+        if team_display_name:
+            description = description.replace(team_tricode, team_display_name, 1) if team_tricode and description.startswith(team_tricode) else description
+
+    description = re.sub(r"\bJump Ball\b", "Jump ball", description, flags=re.IGNORECASE)
     description = re.sub(r"\bFOUL\b", "foul", description, flags=re.IGNORECASE)
     description = re.sub(r"\bTURNOVER\b", "turnover", description, flags=re.IGNORECASE)
     description = re.sub(r"\bSTEAL\b", "steal", description, flags=re.IGNORECASE)
     description = re.sub(r"\bBLOCK\b", "block", description, flags=re.IGNORECASE)
-    description = re.sub(r"\bFree Throw\b", "free throw", description, flags=re.IGNORECASE)
-    description = re.sub(r"\bLayup\b", "layup", description, flags=re.IGNORECASE)
-    description = re.sub(r"\bDunk\b", "dunk", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bVIOLATION\b", "violation", description, flags=re.IGNORECASE)
     description = re.sub(r"\bTimeout\b", "timeout", description, flags=re.IGNORECASE)
-    description = re.sub(r"\bShot\b", "shot", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bout-of-bounds\b", "out of bounds", description, flags=re.IGNORECASE)
+    description = re.sub(r"\b5-second-violation\b", "5-second violation", description, flags=re.IGNORECASE)
     description = re.sub(r"\s+\(", " (", description)
 
-    return description
+    return _normalize_inline_play_stats(description)
 
 
 def _normalize_recent_play(action, home=None, away=None):
     team_tricode = (action.get("teamTricode") or "").strip().upper()
-    description = _format_recent_play_description(action, team_tricode)
+    description = _format_recent_play_description(action, home, away)
     if not description:
         return None
     possession_team_id = _coerce_int(action.get("possession"))
