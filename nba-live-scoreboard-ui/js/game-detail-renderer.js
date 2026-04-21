@@ -269,12 +269,14 @@ export function createGameDetailRenderer({
       const rowMeta = document.createElement("div");
       rowMeta.className = "last-play__item-meta";
 
+      const actionType = play.actionType ? String(play.actionType).trim().toLowerCase() : "";
+      const showPossession = actionType !== "period" && actionType !== "game";
       const actionTeamLabel = play.teamTricode ? String(play.teamTricode).trim() : "";
       const possessionLabel = play.possessionTricode ? String(play.possessionTricode).trim() : "";
       if (actionTeamLabel) {
         rowMeta.appendChild(buildLastPlayChip(actionTeamLabel, "team"));
       }
-      if (possessionLabel && possessionLabel !== actionTeamLabel) {
+      if (showPossession && possessionLabel && possessionLabel !== actionTeamLabel) {
         rowMeta.appendChild(buildLastPlayChip(`${possessionLabel} Possession`));
       }
       const scoreLabel = formatRecentPlayScore(play, homeTeam, awayTeam);
