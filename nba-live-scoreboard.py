@@ -459,27 +459,44 @@ def _ordinal_label(value):
 
 def _normalize_inline_play_stats(text):
     value = str(text or "")
-    value = re.sub(r"\bPTS\b", "pts", value)
-    value = re.sub(r"\b1 pts\b", "1 pt", value)
-    value = re.sub(r"\bAST\b", "ast", value)
-    value = re.sub(r"\bSTL\b", "stl", value)
-    value = re.sub(r"\bBLK\b", "blk", value)
+    value = re.sub(r"\b1 PTS\b", "1 point", value)
+    value = re.sub(r"\b(\d+) PTS\b", r"\1 points", value)
+    value = re.sub(r"\b1 pts\b", "1 point", value)
+    value = re.sub(r"\b(\d+) pts\b", r"\1 points", value)
+    value = re.sub(r"\b1 AST\b", "1 assist", value)
+    value = re.sub(r"\b(\d+) AST\b", r"\1 assists", value)
+    value = re.sub(r"\b1 ast\b", "1 assist", value)
+    value = re.sub(r"\b(\d+) ast\b", r"\1 assists", value)
+    value = re.sub(r"\b1 STL\b", "1 steal", value)
+    value = re.sub(r"\b(\d+) STL\b", r"\1 steals", value)
+    value = re.sub(r"\b1 stl\b", "1 steal", value)
+    value = re.sub(r"\b(\d+) stl\b", r"\1 steals", value)
+    value = re.sub(r"\b1 PF\b", "1 foul", value)
+    value = re.sub(r"\b(\d+) PF\b", r"\1 fouls", value)
+    value = re.sub(r"\b1 BLK\b", "1 block", value)
+    value = re.sub(r"\b(\d+) BLK\b", r"\1 blocks", value)
+    value = re.sub(r"\b1 TO\b", "1 turnover", value)
+    value = re.sub(r"\b(\d+) TO\b", r"\1 turnovers", value)
     return value
 
 
 def _normalize_shot_text(text):
     value = re.sub(r"\s+", " ", str(text or "")).strip()
-    value = re.sub(r"\b3PT pullup\b", "pull-up three point shot", value, flags=re.IGNORECASE)
-    value = re.sub(r"\b3PT step back\b", "step-back three point shot", value, flags=re.IGNORECASE)
-    value = re.sub(r"\b3PT\b", "three point shot", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b3PT pullup\b", "pull-up three-pointer", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b3PT step back\b", "step-back three-pointer", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b3PT\b", "three-pointer", value, flags=re.IGNORECASE)
     value = re.sub(r"\bstep back\b", "step-back", value, flags=re.IGNORECASE)
     value = re.sub(r"\bpullup\b", "pull-up", value, flags=re.IGNORECASE)
     value = re.sub(r"\bfinger roll\b", "finger-roll", value, flags=re.IGNORECASE)
-    value = re.sub(r"\bJump Shot\b", "jump shot", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bJump Shot\b", "jumper", value, flags=re.IGNORECASE)
     value = re.sub(r"\bLayup\b", "layup", value, flags=re.IGNORECASE)
     value = re.sub(r"\bDUNK\b", "dunk", value, flags=re.IGNORECASE)
     value = re.sub(r"\bDunk\b", "dunk", value, flags=re.IGNORECASE)
-    value = re.sub(r"\bShot\b", "shot", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bfadeaway Shot\b", "fadeaway jumper", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bpull-up Shot\b", "pull-up jumper", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bstep-back Shot\b", "step-back jumper", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bShot\b", "jumper", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bthree-pointer jumper\b", "three-pointer", value, flags=re.IGNORECASE)
     value = re.sub(r"(\d+)'", r"\1-foot", value)
     value = re.sub(r"\(([^()]+?)\s+\d+\s+AST\)", r"(\1 assists)", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+\(", " (", value)
@@ -559,9 +576,9 @@ def _format_recent_play_description(action, home=None, away=None):
 
     if " TEAM TURNOVER" in upper_description and team_display_name:
         if "SHOT CLOCK" in upper_description:
-            return f"{team_display_name} turnover: shot-clock violation"
+            return f"{team_display_name} shot-clock violation"
         if "5-SECOND-VIOLATION" in upper_description:
-            return f"{team_display_name} turnover: 5-second violation"
+            return f"{team_display_name} 5-second violation"
         description = description.replace("Team TURNOVER", "turnover")
 
     if action_type == "freethrow":

@@ -238,27 +238,27 @@ export function createGameDetailRenderer({
     const chip = document.createElement("span");
     chip.className = "last-play__chip last-play__chip--score";
 
-    const awayLabelEl = document.createElement("span");
-    awayLabelEl.textContent = awayLabel;
-    chip.appendChild(awayLabelEl);
-
-    chip.appendChild(document.createTextNode(" "));
+    const awaySide = document.createElement("span");
+    awaySide.className = "last-play__score-side";
+    awaySide.appendChild(document.createTextNode(`${awayLabel} `));
 
     const awayScoreEl = document.createElement(scoringTeam === awayLabel.toUpperCase() ? "strong" : "span");
     awayScoreEl.textContent = String(awayScore);
-    chip.appendChild(awayScoreEl);
+    awaySide.appendChild(awayScoreEl);
+    chip.appendChild(awaySide);
 
-    chip.appendChild(document.createTextNode(" - "));
+    const separator = document.createElement("span");
+    separator.className = "last-play__score-separator";
+    separator.textContent = "-";
+    chip.appendChild(separator);
 
+    const homeSide = document.createElement("span");
+    homeSide.className = "last-play__score-side";
     const homeScoreEl = document.createElement(scoringTeam === homeLabel.toUpperCase() ? "strong" : "span");
     homeScoreEl.textContent = String(homeScore);
-    chip.appendChild(homeScoreEl);
-
-    chip.appendChild(document.createTextNode(" "));
-
-    const homeLabelEl = document.createElement("span");
-    homeLabelEl.textContent = homeLabel;
-    chip.appendChild(homeLabelEl);
+    homeSide.appendChild(homeScoreEl);
+    homeSide.appendChild(document.createTextNode(` ${homeLabel}`));
+    chip.appendChild(homeSide);
 
     return chip;
   }

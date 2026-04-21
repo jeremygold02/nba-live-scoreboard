@@ -936,9 +936,21 @@ body {
 }
 
 .last-play__chip--score {
+  gap: 4px;
   color: var(--accent-soft);
   border-color: rgba(142, 195, 240, 0.26);
   background: rgba(142, 195, 240, 0.08);
+}
+
+.last-play__score-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.last-play__score-separator {
+  display: inline-flex;
+  align-items: center;
 }
 
 .last-play__description {
