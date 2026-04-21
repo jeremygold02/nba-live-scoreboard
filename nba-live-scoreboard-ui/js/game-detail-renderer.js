@@ -204,10 +204,30 @@ export function createGameDetailRenderer({
     return value <= 4 ? `Q${value}` : `OT${value - 4}`;
   }
 
-  function renderLastPlay(lastPlay) {
+  function formatRecentPlayMoment(play) {
+    const playClock = formatClock(play && play.clock);
+    const periodLabel = formatLastPlayPeriod(play && play.period);
+    if (periodLabel && playClock) {
+      return `${periodLabel} ${playClock}`;
+    }
+    return playClock || periodLabel || "";
+  }
+
+  function formatRecentPlayScore(play, homeTeam, awayTeam) {
+    const homeScore = Number(play && play.scoreHome);
+    const awayScore = Number(play && play.scoreAway);
+    if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) {
+      return "";
+    }
+    const awayLabel = awayTeam && awayTeam.tricode ? String(awayTeam.tricode).trim() : "Away";
+    const homeLabel = homeTeam && homeTeam.tricode ? String(homeTeam.tricode).trim() : "Home";
+    return `${awayLabel} ${awayScore} - ${homeLabel} ${homeScore}`;
+  }
+
+  function renderRecentPlays(recentPlays, homeTeam, awayTeam) {
     if (!lastPlayEl) return;
-    const description = lastPlay && lastPlay.description ? String(lastPlay.description).trim() : "";
-    if (!description) {
+    const plays = recentPlays && Array.isArray(recentPlays.plays) ? recentPlays.plays.filter((play) => play && play.description) : [];
+    if (plays.length === 0) {
       lastPlayEl.hidden = true;
       lastPlayEl.innerHTML = "";
       return;
@@ -221,42 +241,67 @@ export function createGameDetailRenderer({
 
     const title = document.createElement("div");
     title.className = "last-play__title";
-    title.textContent = "Last Play";
+    title.textContent = "Recent Plays";
 
     const meta = document.createElement("div");
     meta.className = "last-play__meta";
 
-    const possessionLabel = lastPlay.possessionTricode || lastPlay.teamTricode;
-    if (possessionLabel) {
-      meta.appendChild(buildLastPlayChip(`${possessionLabel} Possession`, "team"));
-    }
-
-    const playClock = formatClock(lastPlay.clock);
-    if (playClock) {
-      meta.appendChild(buildLastPlayChip(playClock));
-    }
-
-    const periodLabel = formatLastPlayPeriod(lastPlay.period);
-    if (periodLabel) {
-      meta.appendChild(buildLastPlayChip(periodLabel));
-    }
-
-    if (lastPlay.state === "stale") {
+    if (recentPlays.state === "stale") {
       meta.appendChild(buildLastPlayChip("Cached", "stale"));
     }
 
     head.append(title, meta);
 
-    const body = document.createElement("div");
-    body.className = "last-play__description";
-    body.textContent = description;
+    const list = document.createElement("div");
+    list.className = "last-play__list";
 
-    lastPlayEl.append(head, body);
+    plays.forEach((play) => {
+      const row = document.createElement("div");
+      row.className = "last-play__item";
 
-    if (lastPlay.state === "stale" && lastPlay.message) {
+      const time = document.createElement("div");
+      time.className = "last-play__time";
+      time.textContent = formatRecentPlayMoment(play) || "Recent";
+
+      const content = document.createElement("div");
+      content.className = "last-play__item-content";
+
+      const rowMeta = document.createElement("div");
+      rowMeta.className = "last-play__item-meta";
+
+      const actionTeamLabel = play.teamTricode ? String(play.teamTricode).trim() : "";
+      const possessionLabel = play.possessionTricode ? String(play.possessionTricode).trim() : "";
+      if (actionTeamLabel) {
+        rowMeta.appendChild(buildLastPlayChip(actionTeamLabel, "team"));
+      }
+      if (possessionLabel && possessionLabel !== actionTeamLabel) {
+        rowMeta.appendChild(buildLastPlayChip(`${possessionLabel} Possession`));
+      }
+      const scoreLabel = formatRecentPlayScore(play, homeTeam, awayTeam);
+      if (scoreLabel) {
+        rowMeta.appendChild(buildLastPlayChip(scoreLabel, "score"));
+      }
+
+      const description = document.createElement("div");
+      description.className = "last-play__description";
+      description.textContent = String(play.description).trim();
+
+      if (rowMeta.childNodes.length > 0) {
+        content.append(rowMeta, description);
+      } else {
+        content.appendChild(description);
+      }
+
+      row.append(time, content);
+      list.appendChild(row);
+    });
+
+    lastPlayEl.append(head, list);
+
+    if (recentPlays.state === "stale" && recentPlays.message) {
       const note = document.createElement("div");
       note.className = "last-play__note";
-      note.textContent = lastPlay.message;
+      note.textContent = recentPlays.message;
       lastPlayEl.appendChild(note);
     }
   }
@@ -825,7 +870,7 @@ export function createGameDetailRenderer({
     renderDetails,
     renderHeaders,
     renderLineups,
-    renderLastPlay,
+    renderRecentPlays,
     renderPeriods,
     renderTeamCard,
     renderTeamTable,

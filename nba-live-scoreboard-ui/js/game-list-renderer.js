@@ -51,14 +51,16 @@ export function createGameListRenderer({
     const period = formatPeriodChip(game);
     const tipoff = formatTipoff(game.startTimeUTC);
 
-    if (clock) {
-      meta.appendChild(buildMetaChip(clock));
-    }
-    if (period) {
-      meta.appendChild(buildMetaChip(period));
-    }
-    if (phase) {
-      meta.appendChild(buildMetaChip(phase));
+    if (statusKey === "live") {
+      if (clock) {
+        meta.appendChild(buildMetaChip(clock));
+      }
+      if (period) {
+        meta.appendChild(buildMetaChip(period));
+      }
+      if (phase) {
+        meta.appendChild(buildMetaChip(phase));
+      }
     }
     if (tipoff && statusKey !== "live") {
       meta.appendChild(buildMetaChip(tipoff, "scheduled"));

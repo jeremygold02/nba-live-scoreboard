@@ -1,6 +1,7 @@
 __pycache__/
 .idea/
 nba-live-scoreboard-ui/resources/favorites.json
+nba-live-scoreboard-ui/resources/ui-preferences.json
 build/
 dist/
 .venv-build/

@@ -476,7 +476,7 @@ body {
 
 .game-list__section-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 290px);
+  grid-template-columns: repeat(auto-fill, 320px);
   gap: 12px;
   justify-content: start;
 }
@@ -875,14 +875,13 @@ body {
 }
 
 .last-play {
-  background:
-    radial-gradient(circle at top left, rgba(230, 195, 104, 0.09), transparent 42%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+  background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 18px;
-  padding: 15px 16px;
+  padding: 16px;
   display: grid;
   gap: 12px;
+  animation: fadeUp 0.55s ease-out 0.2s both;
 }
 
 .last-play__head {
@@ -891,10 +890,12 @@ body {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .last-play__title {
-  font-size: 12px;
+  font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 2px;
   color: var(--text-muted);
@@ -914,8 +915,8 @@ body {
   min-height: 22px;
   padding: 3px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
   color: var(--text-muted);
   font-size: 10px;
   letter-spacing: 0.35px;
@@ -923,9 +924,9 @@ body {
 }
 
 .last-play__chip--team {
-  color: #fff0c3;
-  border-color: rgba(230, 195, 104, 0.28);
-  background: rgba(230, 195, 104, 0.11);
+  color: var(--gold);
+  border-color: rgba(230, 195, 104, 0.2);
+  background: rgba(230, 195, 104, 0.08);
 }
 
 .last-play__chip--stale {
@@ -934,13 +935,66 @@ body {
   background: rgba(230, 195, 104, 0.1);
 }
 
+.last-play__chip--score {
+  color: var(--accent-soft);
+  border-color: rgba(142, 195, 240, 0.26);
+  background: rgba(142, 195, 240, 0.08);
+}
+
 .last-play__description {
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--text);
   font-weight: 600;
   text-wrap: pretty;
-  max-width: 70ch;
+}
+
+.last-play__list {
+  display: grid;
+  gap: 10px;
+  max-height: 500px;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.last-play__list:hover,
+.last-play__list:focus-within {
+  scrollbar-color: rgba(142, 195, 240, 0.3) transparent;
+}
+
+.last-play__item {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.last-play__time {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  font-weight: 700;
+  padding-top: 3px;
+}
+
+.last-play__item-content {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.last-play__item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .last-play__note {

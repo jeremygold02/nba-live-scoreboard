@@ -726,7 +726,7 @@ async function refreshDetail(options = {}) {
     detailRenderer.renderTeamCard(homeCard, home);
     detailRenderer.renderCenter(centerCard, state.game);
     detailRenderer.renderDetails(state.game);
-    detailRenderer.renderLastPlay(state.lastPlay);
+    detailRenderer.renderRecentPlays(state.recentPlays, home, away);
     detailRenderer.renderHeaders(home, away);
     detailRenderer.renderPeriods(state.periods, home, away);
     detailRenderer.renderComparison(home, away);
