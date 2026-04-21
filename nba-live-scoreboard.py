@@ -407,7 +407,7 @@ def _on_court_result(data=None, state="missing", message=None):
     }
 
 
-def _last_play_result(data=None, state="missing", message=None):
+def _recent_plays_result(data=None, state="missing", message=None):
     return {
         "data": data,
         "state": state,
@@ -415,8 +415,61 @@ def _last_play_result(data=None, state="missing", message=None):
     }
 
 
-def _normalize_last_play(action, home=None, away=None):
-    description = (action.get("description") or "").strip()
+def _format_recent_play_description(action, team_tricode=""):
+    description = re.sub(r"\s+", " ", (action.get("description") or "")).strip()
+    if not description:
+        return ""
+
+    action_type = (action.get("actionType") or "").strip().lower()
+    sub_type = (action.get("subType") or "").strip().lower()
+    team_label = (team_tricode or "").strip().upper()
+    upper_description = description.upper()
+
+    if team_label and upper_description.startswith("TEAM "):
+        if action_type == "rebound" and sub_type in {"offensive", "defensive"}:
+            return f"{team_label} {sub_type} rebound"
+        description = f"{team_label} {description[5:].strip()}"
+
+    if team_label and " TEAM TURNOVER" in upper_description:
+        description = re.sub(r"\bTEAM TURNOVER\b", "turnover", description, count=1, flags=re.IGNORECASE)
+
+    if upper_description == "PERIOD END":
+        return "End of period"
+    if upper_description == "GAME END":
+        return "End of game"
+
+    if action_type == "timeout" and team_label and upper_description == f"{team_label} TIMEOUT":
+        return f"{team_label} timeout"
+
+    if action_type == "rebound" and sub_type in {"offensive", "defensive"}:
+        description = re.sub(
+            r"\bREBOUND\b",
+            f"{sub_type} rebound",
+            description,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+    description = re.sub(r"^MISS\b", "Missed", description, count=1, flags=re.IGNORECASE)
+    description = re.sub(r"\bJump Shot\b", "jump shot", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bREBOUND\b", "rebound", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bFOUL\b", "foul", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bTURNOVER\b", "turnover", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bSTEAL\b", "steal", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bBLOCK\b", "block", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bFree Throw\b", "free throw", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bLayup\b", "layup", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bDunk\b", "dunk", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bTimeout\b", "timeout", description, flags=re.IGNORECASE)
+    description = re.sub(r"\bShot\b", "shot", description, flags=re.IGNORECASE)
+    description = re.sub(r"\s+\(", " (", description)
+
+    return description
+
+
+def _normalize_recent_play(action, home=None, away=None):
+    team_tricode = (action.get("teamTricode") or "").strip().upper()
+    description = _format_recent_play_description(action, team_tricode)
     if not description:
         return None
     possession_team_id = _coerce_int(action.get("possession"))
@@ -429,10 +482,11 @@ def _normalize_last_play(action, home=None, away=None):
         elif away_id is not None and possession_team_id == away_id:
             possession_tricode = (away or {}).get("tricode") or ""
     return {
+        "actionNumber": _coerce_int(action.get("actionNumber")),
         "description": description,
         "actionType": action.get("actionType") or "",
         "subType": action.get("subType") or "",
-        "teamTricode": action.get("teamTricode") or "",
+        "teamTricode": team_tricode,
         "possessionTricode": possession_tricode,
         "clock": action.get("clock") or "",
         "period": _coerce_int(action.get("period")),
@@ -441,7 +495,7 @@ def _normalize_last_play(action, home=None, away=None):
     }
 
 
-def _is_meaningful_last_play(action):
+def _is_meaningful_recent_play(action):
     action_type = (action.get("actionType") or "").strip().lower()
     descriptor = (action.get("descriptor") or "").strip().lower()
     if action_type in {"substitution", "instantreplay"}:
@@ -451,27 +505,55 @@ def _is_meaningful_last_play(action):
     return True
 
 
-def _extract_last_play(actions, home=None, away=None):
-    fallback = None
+def _extract_recent_plays(actions, home=None, away=None, limit=None):
+    fallback = []
+    plays = []
     for action in reversed(actions or []):
-        normalized = _normalize_last_play(action, home, away)
+        normalized = _normalize_recent_play(action, home, away)
         if not normalized:
             continue
-        if fallback is None:
-            fallback = normalized
-        if _is_meaningful_last_play(action):
-            return normalized
-    return fallback
+        if limit is None or len(fallback) < limit:
+            fallback.append(normalized)
+        if _is_meaningful_recent_play(action):
+            plays.append(normalized)
+            if limit is not None and len(plays) >= limit:
+                break
+    return plays or (fallback[:limit] if limit is not None else fallback)
 
 
-def _serialize_last_play(last_play_state):
-    data = (last_play_state or {}).get("data")
+def _merge_recent_plays(current, cached, limit=None):
+    merged = []
+    seen = set()
+    for source in (current or [], cached or []):
+        for play in source:
+            if not play:
+                continue
+            action_number = _coerce_int(play.get("actionNumber"))
+            unique_key = action_number
+            if unique_key is None:
+                unique_key = (
+                    play.get("description") or "",
+                    play.get("clock") or "",
+                    play.get("period") or "",
+                    play.get("teamTricode") or "",
+                )
+            if unique_key in seen:
+                continue
+            seen.add(unique_key)
+            merged.append(play)
+            if limit is not None and len(merged) >= limit:
+                return merged
+    return merged
+
+
+def _serialize_recent_plays(recent_plays_state):
+    data = (recent_plays_state or {}).get("data") or []
     if not data:
         return None
     return {
-        **data,
-        "state": (last_play_state or {}).get("state") or "fresh",
-        "message": (last_play_state or {}).get("message"),
+        "plays": data,
+        "state": (recent_plays_state or {}).get("state") or "fresh",
+        "message": (recent_plays_state or {}).get("message"),
     }
 
 
@@ -479,7 +561,7 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
     if not game_id:
         return {
             "onCourt": _on_court_result(),
-            "lastPlay": _last_play_result(),
+            "recentPlays": _recent_plays_result(),
         }
 
     home_players = (home or {}).get("players") or []
@@ -490,9 +572,9 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
 
     cached = PBP_CACHE.get(game_id) or {}
 
-    def _cached_playbyplay(on_court_message, last_play_message):
+    def _cached_playbyplay(on_court_message, recent_plays_message):
         cached_on_court = cached.get("onCourt")
-        cached_last_play = cached.get("lastPlay")
+        cached_recent_plays = cached.get("recentPlays")
         if can_build_on_court and cached_on_court:
             on_court_state = _on_court_result(
                 cached_on_court,
@@ -508,29 +590,29 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
         else:
             on_court_state = _on_court_result()
 
-        if cached_last_play:
-            last_play_state = _last_play_result(
-                cached_last_play,
+        if cached_recent_plays:
+            recent_plays_state = _recent_plays_result(
+                cached_recent_plays,
                 state="stale",
-                message=last_play_message,
+                message=recent_plays_message,
             )
         else:
-            last_play_state = _last_play_result(
+            recent_plays_state = _recent_plays_result(
                 None,
                 state="missing",
-                message="Last play is unavailable because play-by-play data could not be loaded.",
+                message="Recent plays are unavailable because play-by-play data could not be loaded.",
             )
 
         return {
             "onCourt": on_court_state,
-            "lastPlay": last_play_state,
+            "recentPlays": recent_plays_state,
         }
 
     backoff = _get_backoff(game_id, PBP_BACKOFF)
-    if backoff and (cached.get("onCourt") or cached.get("lastPlay")):
+    if backoff and (cached.get("onCourt") or cached.get("recentPlays")):
         return _cached_playbyplay(
             "Using cached on-court lineups during play-by-play backoff.",
-            "Showing the last cached play during play-by-play backoff.",
+            "Showing cached recent plays during play-by-play backoff.",
         )
 
     try:
@@ -548,14 +630,17 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
         _set_backoff(game_id, PBP_BACKOFF)
         return _cached_playbyplay(
             "Using cached on-court lineups because play-by-play is unavailable.",
-            "Showing the last cached play because play-by-play is unavailable.",
+            "Showing cached recent plays because play-by-play is unavailable.",
         )
 
     actions = (payload.get("game") or {}).get("actions") or []
     if actions:
         actions = sorted(actions, key=lambda item: item.get("actionNumber") or 0)
 
-    last_play = _extract_last_play(actions, home, away)
+    recent_plays = _merge_recent_plays(
+        _extract_recent_plays(actions, home, away),
+        cached.get("recentPlays"),
+    )
 
     if can_build_on_court and actions:
         home_id = home.get("id")
@@ -586,8 +671,8 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
     cache_entry = dict(cached)
     if can_build_on_court and (home_on or away_on):
         cache_entry["onCourt"] = {"home": sorted(home_on), "away": sorted(away_on)}
-    if last_play:
-        cache_entry["lastPlay"] = last_play
+    if recent_plays:
+        cache_entry["recentPlays"] = recent_plays
     if cache_entry:
         PBP_CACHE[game_id] = cache_entry
 
@@ -611,14 +696,14 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
     else:
         on_court_state = _on_court_result()
 
-    if last_play:
-        last_play_state = _last_play_result(last_play, state="fresh")
+    if recent_plays:
+        recent_plays_state = _recent_plays_result(recent_plays, state="fresh")
     else:
-        last_play_state = _last_play_result()
+        recent_plays_state = _recent_plays_result()
 
     return {
         "onCourt": on_court_state,
-        "lastPlay": last_play_state,
+        "recentPlays": recent_plays_state,
     }
 
 
@@ -1153,7 +1238,7 @@ def build_state(game_id=None):
             "dataStatus": None,
             "game": base_game,
             "games": summaries,
-            "lastPlay": None,
+            "recentPlays": None,
             "periods": [],
             "home": {**home_fallback, "stats": {}, "players": [], "onCourt": []},
             "away": {**away_fallback, "stats": {}, "players": [], "onCourt": []},
@@ -1168,7 +1253,7 @@ def build_state(game_id=None):
         away = cache.get("away", {**away_fallback, "stats": {}, "players": []})
         playbyplay_state = _build_playbyplay_state(base_game["gameId"], home, away, include_on_court=game_status == 2)
         on_court_state = playbyplay_state.get("onCourt") or _on_court_result()
-        last_play = _serialize_last_play(playbyplay_state.get("lastPlay"))
+        recent_plays = _serialize_recent_plays(playbyplay_state.get("recentPlays"))
         home, away = _apply_on_court_state(home, away, on_court_state)
         issues = []
         if on_court_state.get("message"):
@@ -1186,7 +1271,7 @@ def build_state(game_id=None):
             ),
             "game": base_game,
             "games": summaries,
-            "lastPlay": last_play,
+            "recentPlays": recent_plays,
             "periods": cache.get("periods", []),
             "home": home,
             "away": away,
@@ -1216,7 +1301,7 @@ def build_state(game_id=None):
             away = cache.get("away", {**away_fallback, "stats": {}, "players": []})
             playbyplay_state = _build_playbyplay_state(base_game["gameId"], home, away, include_on_court=game_status == 2)
             on_court_state = playbyplay_state.get("onCourt") or _on_court_result()
-            last_play = _serialize_last_play(playbyplay_state.get("lastPlay"))
+            recent_plays = _serialize_recent_plays(playbyplay_state.get("recentPlays"))
             home, away = _apply_on_court_state(home, away, on_court_state)
             issues = []
             if on_court_state.get("message"):
@@ -1234,7 +1319,7 @@ def build_state(game_id=None):
                 ),
                 "game": base_game,
                 "games": summaries,
-                "lastPlay": last_play,
+                "recentPlays": recent_plays,
                 "periods": cache.get("periods", []),
                 "home": home,
                 "away": away,
@@ -1279,7 +1364,7 @@ def build_state(game_id=None):
         }
     playbyplay_state = _build_playbyplay_state(base_game["gameId"], home, away, include_on_court=game_status == 2)
     on_court_state = playbyplay_state.get("onCourt") or _on_court_result()
-    last_play = _serialize_last_play(playbyplay_state.get("lastPlay"))
+    recent_plays = _serialize_recent_plays(playbyplay_state.get("recentPlays"))
     home, away = _apply_on_court_state(home, away, on_court_state)
 
     data_status = None
@@ -1307,7 +1392,7 @@ def build_state(game_id=None):
         "dataStatus": data_status,
         "game": base_game,
         "games": summaries,
-        "lastPlay": last_play,
+        "recentPlays": recent_plays,
         "periods": periods,
         "home": home,
         "away": away,
