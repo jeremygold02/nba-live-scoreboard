@@ -36,7 +36,7 @@
       <section class="game-list" id="list-view">
         <div class="game-list__header">
           <div>
-            <p class="game-list__eyebrow">Today</p>
+            <p class="game-list__eyebrow" id="game-list-date-label">Today</p>
             <h2>Pick a game</h2>
           </div>
           <div class="game-list__meta">
@@ -53,6 +53,15 @@
             <button class="game-filter" data-filter="finished" type="button">Finished</button>
           </div>
           <div class="game-list__tools">
+            <div class="game-list__date-nav">
+              <button id="scoreboard-date-prev" type="button" aria-label="Previous day">Previous</button>
+              <label class="game-list__date-picker">
+                <span class="sr-only">Scoreboard date</span>
+                <input id="scoreboard-date" type="date" />
+              </label>
+              <button id="scoreboard-date-today" type="button">Today</button>
+              <button id="scoreboard-date-next" type="button" aria-label="Next day">Next</button>
+            </div>
             <label class="game-list__sort">
               Sort
               <select id="game-sort">

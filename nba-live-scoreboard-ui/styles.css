@@ -406,6 +406,18 @@ body {
   flex-wrap: wrap;
 }
 
+.game-list__date-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.game-list__date-picker {
+  display: flex;
+  align-items: center;
+}
+
 .game-list__sort,
 .game-list__search {
   display: flex;
@@ -415,6 +427,7 @@ body {
   color: var(--text-muted);
 }
 
+.game-list__date-picker input,
 .game-list__sort select,
 .game-list__search input {
   background: rgba(8, 12, 20, 0.7);
@@ -428,6 +441,20 @@ body {
 
 .game-list__search input {
   min-width: 180px;
+}
+
+.game-list__date-nav button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.game-list__date-nav button:hover {
+  border-color: rgba(255, 255, 255, 0.25);
 }
 
 #clear-selection {
@@ -879,6 +906,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 14px;
+  position: relative;
   display: grid;
   gap: 10px;
   animation: fadeUp 0.55s ease-out 0.2s both;
@@ -983,7 +1011,10 @@ body {
 }
 
 .last-play__back-to-top {
-  justify-self: end;
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 6px;

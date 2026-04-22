@@ -235,7 +235,7 @@ export function createGameListRenderer({
       }
     });
 
-    const emptyLabel = allGames.length ? selectedLabel : "No games today";
+    const emptyLabel = allGames.length ? selectedLabel : "No games on board";
     if (selectedGameEl) {
       selectedGameEl.textContent = emptyLabel;
     }

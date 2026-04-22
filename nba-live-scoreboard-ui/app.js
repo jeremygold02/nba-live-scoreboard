@@ -32,6 +32,7 @@ import {
   detailsEl,
   fallbackEl,
   gameFiltersEl,
+  gameListDateLabelEl,
   gameSearchInput,
   gameSortSelect,
   gameViewEl,
@@ -50,6 +51,10 @@ import {
   refreshBtn,
   refreshLabel,
   scoreboardEl,
+  scoreboardDateInput,
+  scoreboardDateNextBtn,
+  scoreboardDatePrevBtn,
+  scoreboardDateTodayBtn,
   selectedGameEl,
   selectedGameViewEl,
   statFlashToggleBtn,
@@ -72,7 +77,7 @@ import {
   shouldShowPhase,
 } from "./js/game-status.js";
 import {
-  getEmptyGameListMessage,
+  getEmptyGameListMessage as getBaseEmptyGameListMessage,
   isFavoriteGame,
   matchesGameFilter,
   matchesGameSearch,
@@ -127,8 +132,74 @@ let gameFilter = "all";
 let gameSearchQuery = "";
 let gameSearchTerm = "";
 let gameSort = "importance";
+let scoreboardDate = getTodayIsoDate();
+let gameListEmptyMessageOverride = "";
 let startupPromise = null;
 let startupHydrated = false;
+
+function padDatePart(value) {
+  return String(value).padStart(2, "0");
+}
+
+function getTodayIsoDate() {
+  const now = new Date();
+  return `${now.getFullYear()}-${padDatePart(now.getMonth() + 1)}-${padDatePart(now.getDate())}`;
+}
+
+function normalizeScoreboardDate(value) {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    return value.trim();
+  }
+  return getTodayIsoDate();
+}
+
+function isTodayScoreboardDate(value = scoreboardDate) {
+  return normalizeScoreboardDate(value) === getTodayIsoDate();
+}
+
+function shiftScoreboardDate(value, offsetDays) {
+  const normalized = normalizeScoreboardDate(value);
+  const [year, month, day] = normalized.split("-").map(Number);
+  const next = new Date(year, month - 1, day);
+  next.setDate(next.getDate() + offsetDays);
+  return `${next.getFullYear()}-${padDatePart(next.getMonth() + 1)}-${padDatePart(next.getDate())}`;
+}
+
+function formatScoreboardDateLabel(value = scoreboardDate) {
+  const normalized = normalizeScoreboardDate(value);
+  if (normalized === getTodayIsoDate()) return "Today";
+  const [year, month, day] = normalized.split("-").map(Number);
+  const parsed = new Date(year, month - 1, day);
+  return parsed.toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function updateScoreboardDateUI() {
+  const normalized = normalizeScoreboardDate(scoreboardDate);
+  scoreboardDate = normalized;
+  if (scoreboardDateInput) {
+    scoreboardDateInput.value = normalized;
+  }
+  if (gameListDateLabelEl) {
+    gameListDateLabelEl.textContent = formatScoreboardDateLabel(normalized);
+  }
+}
+
+function getEmptyGameListMessage(hasGames, gameSearchQuery, gameFilter) {
+  if (gameListEmptyMessageOverride && !hasGames) {
+    return gameListEmptyMessageOverride;
+  }
+  if (!hasGames) {
+    if (isTodayScoreboardDate()) {
+      return "No NBA games are on today's board.";
+    }
+    return `No NBA games are on ${formatScoreboardDateLabel(scoreboardDate)}.`;
+  }
+  return getBaseEmptyGameListMessage(hasGames, gameSearchQuery, gameFilter);
+}
 
 function formatStatLine(team) {
   if (!team || !team.stats) return "";
@@ -370,12 +441,30 @@ function setSelectedGameId(gameId) {
   const changed = previousGameId !== selectedGameId;
   renderGameList(lastGames);
   if (selectedGameId) {
+    if (changed) {
+      clearGameUI();
+    }
     showGameView();
     refreshDetail({ bypassThrottle: changed });
   } else {
     showListView();
     clearDetailRefreshTimer();
   }
+}
+
+function setScoreboardDate(nextDate, options = {}) {
+  const normalized = normalizeScoreboardDate(nextDate);
+  const changed = normalized !== scoreboardDate;
+  scoreboardDate = normalized;
+  updateScoreboardDateUI();
+  if (!changed && !options.forceRefresh) {
+    return;
+  }
+  if (selectedGameId) {
+    setSelectedGameId("");
+  }
+  statusEl.textContent = "Loading";
+  refreshScoreboard({ bypassThrottle: true });
 }
 
 function renderGameList(games) {
@@ -428,6 +517,7 @@ async function getScoreboardState() {
     selectedGameId,
     view: getScoreboardView(),
     notificationsEnabled,
+    scoreboardDate,
   });
 }
 
@@ -436,6 +526,7 @@ async function getDetailState() {
     selectedGameId,
     view: getScoreboardView(),
     notificationsEnabled,
+    scoreboardDate,
   });
 }
 
@@ -489,6 +580,13 @@ function getVisibleGames() {
 
 function getGameById(gameId) {
   return lastGames.find((game) => game.gameId === gameId) || null;
+}
+
+function getScoreboardStatusText(state) {
+  if (!state) return formatScoreboardDateLabel();
+  if (state.status === "no_games") return "No games";
+  if (state.hasLiveGames) return "Live games";
+  return formatScoreboardDateLabel(state.scoreboardDate || scoreboardDate);
 }
 
 function moveSelectedGame(direction) {
@@ -609,6 +707,24 @@ async function refreshScoreboard(options = {}) {
       scheduleScoreboardRefresh(SCOREBOARD_IDLE_REFRESH_MS);
       return;
     }
+    if (state.scoreboardDate) {
+      scoreboardDate = normalizeScoreboardDate(state.scoreboardDate);
+      updateScoreboardDateUI();
+    }
+
+    if (state.status === "error") {
+      gameListEmptyMessageOverride =
+        state.error || `Could not load games for ${formatScoreboardDateLabel(state.scoreboardDate || scoreboardDate)}.`;
+      if (!selectedGameId) {
+        statusEl.textContent = "Error";
+        renderGameList([]);
+        showListView();
+      }
+      scheduleScoreboardRefresh(getRefreshDelay(state, SCOREBOARD_IDLE_REFRESH_MS));
+      return;
+    }
+
+    gameListEmptyMessageOverride = "";
 
     if (state.games && gamesEl) {
       renderGameList(state.games);
@@ -620,23 +736,12 @@ async function refreshScoreboard(options = {}) {
 
     if (!selectedGameId) {
       setUpdatedTime(state.updated);
-      if (state.status === "no_games") {
-        statusEl.textContent = "No games";
-      } else if (state.hasLiveGames) {
-        statusEl.textContent = "Live games";
-      } else {
-        statusEl.textContent = "Today";
-      }
+      statusEl.textContent = getScoreboardStatusText(state);
     }
 
     if (state.status === "no_games" && !selectedGameId) {
       showListView();
       clearGameUI();
-    }
-
-    if (state.status === "error") {
-      scheduleScoreboardRefresh(getRefreshDelay(state, SCOREBOARD_IDLE_REFRESH_MS));
-      return;
     }
 
     const nextInterval = getRefreshDelay(
@@ -670,6 +775,7 @@ async function refreshDetail(options = {}) {
   }
   isDetailRefreshing = true;
   lastDetailRefreshAt = Date.now();
+  const requestedGameId = selectedGameId;
   try {
     let state;
     try {
@@ -680,6 +786,14 @@ async function refreshDetail(options = {}) {
       renderFallback(`API error: ${err}`);
       scheduleDetailRefresh(DETAIL_IDLE_REFRESH_MS);
       return;
+    }
+
+    if (requestedGameId !== selectedGameId) {
+      return;
+    }
+    if (state.scoreboardDate) {
+      scoreboardDate = normalizeScoreboardDate(state.scoreboardDate);
+      updateScoreboardDateUI();
     }
 
     setUpdatedTime(state.dataUpdated || state.updated);
@@ -800,6 +914,7 @@ window.addEventListener("DOMContentLoaded", () => {
   setUpdatedTime(new Date().toISOString());
   statusEl.textContent = "Waiting";
   renderFallback("Waiting for pywebview...");
+  updateScoreboardDateUI();
   setScoreboardView(scoreboardView);
   setTableView(tableView);
   setStatFlash(statFlashEnabled);
@@ -838,6 +953,30 @@ window.addEventListener("DOMContentLoaded", () => {
   if (refreshBtn) {
     refreshBtn.addEventListener("click", () => {
       manualRefresh();
+    });
+  }
+
+  if (scoreboardDateInput) {
+    scoreboardDateInput.addEventListener("change", () => {
+      setScoreboardDate(scoreboardDateInput.value || getTodayIsoDate());
+    });
+  }
+
+  if (scoreboardDatePrevBtn) {
+    scoreboardDatePrevBtn.addEventListener("click", () => {
+      setScoreboardDate(shiftScoreboardDate(scoreboardDate, -1));
+    });
+  }
+
+  if (scoreboardDateTodayBtn) {
+    scoreboardDateTodayBtn.addEventListener("click", () => {
+      setScoreboardDate(getTodayIsoDate(), { forceRefresh: true });
+    });
+  }
+
+  if (scoreboardDateNextBtn) {
+    scoreboardDateNextBtn.addEventListener("click", () => {
+      setScoreboardDate(shiftScoreboardDate(scoreboardDate, 1));
     });
   }
 
