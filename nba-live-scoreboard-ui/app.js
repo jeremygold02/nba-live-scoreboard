@@ -140,8 +140,8 @@ function formatStatLine(team) {
     Number.isFinite(stats.tpa) ||
     Number.isFinite(stats.ftm) ||
     Number.isFinite(stats.fta) ||
-    Number.isFinite(stats.rebounds) ||
-    Number.isFinite(stats.assists);
+    Number.isFinite(stats.tsPct) ||
+    Number.isFinite(stats.efgPct);
   if (!hasAny) return "";
   const safe = (value) => (Number.isFinite(value) ? value : 0);
   const ts = formatPct(stats.tsPct);
@@ -155,9 +155,7 @@ function formatStatLine(team) {
   const fgPct = formatShotPct(fgm, fga);
   const tpPct = formatShotPct(tpm, tpa);
   const ftPct = formatShotPct(ftm, fta);
-  const rebounds = safe(stats.rebounds);
-  const assists = safe(stats.assists);
-  return `${fgm}-${fga} FG (${fgPct}) | ${tpm}-${tpa} 3PT (${tpPct}) | ${ftm}-${fta} FT (${ftPct}) | ${rebounds} REB | ${assists} AST | ${ts} TS | ${efg} eFG`;
+  return `FG% ${fgPct} | 3PT% ${tpPct} | FT% ${ftPct} | TS% ${ts} | eFG% ${efg}`;
 }
 
 function parseUpdated(value) {
