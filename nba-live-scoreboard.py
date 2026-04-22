@@ -12,6 +12,7 @@ from socketserver import TCPServer
 import webview
 from requests import exceptions as requests_exceptions
 from nba_api.live.nba.endpoints import scoreboard, boxscore, playbyplay
+from nba_api.stats.endpoints import scoreboardv2
 
 try:
     from plyer import notification as plyer_notification
@@ -47,6 +48,22 @@ DEFAULT_UI_PREFERENCES = {
     "statFlashEnabled": True,
     "notificationsEnabled": False,
 }
+FIREFOX_NBA_STATS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+    "Connection": "keep-alive",
+    "Host": "stats.nba.com",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "Pragma": "no-cache",
+    "Cache-Control": "no-cache",
+    "TE": "trailers",
+}
 
 TRANSIENT_REQUEST_PATTERNS = (
     "connection aborted",
@@ -71,6 +88,23 @@ def _request_health_defaults():
 
 def _now_utc_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _local_today_iso():
+    return datetime.now().astimezone().date().isoformat()
+
+
+def _normalize_scoreboard_date(value):
+    if not value:
+        return _local_today_iso()
+    text = str(value).strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    return _local_today_iso()
+
+
+def _is_today_scoreboard_date(value):
+    return _normalize_scoreboard_date(value) == _local_today_iso()
 
 
 def _is_transient_request_error(exc):
@@ -158,7 +192,7 @@ def _build_polling_state(refresh_ms, mode, reason=None):
     return result
 
 
-def _scoreboard_polling_state(status, has_live_games):
+def _scoreboard_polling_state(status, has_live_games, is_today=True):
     if status == "error":
         refresh_ms = _adaptive_interval_ms(
             SCOREBOARD_IDLE_POLL_MS,
@@ -167,6 +201,9 @@ def _scoreboard_polling_state(status, has_live_games):
             ("scoreboard",),
         )
         return _build_polling_state(refresh_ms, "error", "scoreboard_error")
+
+    if not is_today:
+        return _build_polling_state(SCOREBOARD_IDLE_POLL_MS, "dated")
 
     if has_live_games:
         refresh_ms = _adaptive_interval_ms(
@@ -232,6 +269,7 @@ def _apply_scoreboard_polling(state):
     state["polling"] = _scoreboard_polling_state(
         state.get("status"),
         bool(state.get("hasLiveGames")),
+        bool(state.get("isToday", True)),
     )
     return state
 
@@ -958,6 +996,105 @@ def _team_from_scoreboard(team):
     }
 
 
+def _parse_record(record_text):
+    text = str(record_text or "").strip()
+    match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", text)
+    if not match:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
+
+
+def _stats_tipoff_to_utc(game_date, status_text):
+    text = str(status_text or "").strip()
+    match = re.search(r"(\d{1,2}:\d{2})\s*([AP]M)", text, re.IGNORECASE)
+    if not match:
+        return ""
+    try:
+        local_time = datetime.strptime(
+            f"{game_date} {match.group(1)} {match.group(2).upper()}",
+            "%Y-%m-%d %I:%M %p",
+        )
+    except ValueError:
+        return ""
+    local_zone = datetime.now().astimezone().tzinfo
+    return local_time.replace(tzinfo=local_zone).astimezone(timezone.utc).isoformat()
+
+
+def _clock_from_stats_scoreboard(header):
+    live_pc_time = str(header.get("LIVE_PC_TIME") or "").strip()
+    if live_pc_time:
+        return live_pc_time
+    live_bcast = str(header.get("LIVE_PERIOD_TIME_BCAST") or "").strip()
+    match = re.search(r"(\d{1,2}:\d{2})", live_bcast)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _team_from_stats_line(line):
+    wins, losses = _parse_record(line.get("TEAM_WINS_LOSSES"))
+    return {
+        "teamId": line.get("TEAM_ID"),
+        "teamCity": line.get("TEAM_CITY_NAME") or "",
+        "teamName": line.get("TEAM_NAME") or "",
+        "teamTricode": line.get("TEAM_ABBREVIATION") or "",
+        "score": _coerce_int(line.get("PTS")) or 0,
+        "wins": wins,
+        "losses": losses,
+        "timeoutsRemaining": None,
+        "inBonus": None,
+    }
+
+
+def _game_from_stats_scoreboard(header, line_scores, game_date):
+    home_team_id = header.get("HOME_TEAM_ID")
+    away_team_id = header.get("VISITOR_TEAM_ID")
+    teams_by_id = {
+        line.get("TEAM_ID"): line
+        for line in line_scores
+        if line.get("TEAM_ID") is not None
+    }
+    home_line = teams_by_id.get(home_team_id)
+    away_line = teams_by_id.get(away_team_id)
+    if not home_line or not away_line:
+        return None
+
+    status_text = header.get("GAME_STATUS_TEXT") or ""
+    start_time_utc = _stats_tipoff_to_utc(game_date, status_text)
+    return {
+        "gameId": header.get("GAME_ID"),
+        "gameStatus": _coerce_int(header.get("GAME_STATUS_ID")),
+        "gameStatusText": status_text,
+        "period": _coerce_int(header.get("LIVE_PERIOD")) or 0,
+        "gameClock": _clock_from_stats_scoreboard(header),
+        "gameTimeUTC": start_time_utc,
+        "arenaName": header.get("ARENA_NAME") or "",
+        "arenaCity": "",
+        "arenaState": "",
+        "homeTeam": _team_from_stats_line(home_line),
+        "awayTeam": _team_from_stats_line(away_line),
+    }
+
+
+def _rows_from_stats_dataset(dataset):
+    payload = dataset.get_dict() if hasattr(dataset, "get_dict") else dataset
+    if not isinstance(payload, dict):
+        return []
+    headers = payload.get("headers") or []
+    data = payload.get("data") or []
+    if not headers or not data:
+        return []
+    rows = []
+    for row in data:
+        if not isinstance(row, list):
+            continue
+        rows.append({
+            headers[index]: row[index] if index < len(row) else None
+            for index in range(len(headers))
+        })
+    return rows
+
+
 def _team_from_boxscore(box_team, fallback, period_count):
     stats = box_team.get("statistics") or {}
     players_raw = box_team.get("players") or []
@@ -1315,27 +1452,64 @@ class GameEventNotifier:
                 self._send(game_id, event_key, title, body)
 
 
-def _load_scoreboard_snapshot():
+def _load_scoreboard_snapshot(scoreboard_date=None):
+    scoreboard_date = _normalize_scoreboard_date(scoreboard_date)
+    is_today = _is_today_scoreboard_date(scoreboard_date)
     updated = _now_utc_iso()
-    LOG.info("scoreboard snapshot start")
+    LOG.info("scoreboard snapshot start for %s", scoreboard_date)
     try:
-        board = _fetch_live_data(
-            "today's scoreboard",
-            lambda: scoreboard.ScoreBoard(timeout=LIVE_REQUEST_TIMEOUT_SECONDS),
-            request_key="scoreboard",
-        )
-        games = board.games.get_dict()
+        if is_today:
+            board = _fetch_live_data(
+                "today's scoreboard",
+                lambda: scoreboard.ScoreBoard(timeout=LIVE_REQUEST_TIMEOUT_SECONDS),
+                request_key="scoreboard",
+            )
+            games = board.games.get_dict()
+        else:
+            board = _fetch_live_data(
+                f"the scoreboard for {scoreboard_date}",
+                lambda: scoreboardv2.ScoreboardV2(
+                    day_offset=0,
+                    game_date=scoreboard_date,
+                    headers=FIREFOX_NBA_STATS_HEADERS,
+                    timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
+                ),
+                request_key="scoreboard",
+            )
+            headers = _rows_from_stats_dataset(board.game_header)
+            lines = _rows_from_stats_dataset(board.line_score)
+            lines_by_game = {}
+            for line in lines:
+                game_id = line.get("GAME_ID")
+                if not game_id:
+                    continue
+                lines_by_game.setdefault(game_id, []).append(line)
+            games = []
+            seen_game_ids = set()
+            for header in headers:
+                game_id = header.get("GAME_ID")
+                if not game_id or game_id in seen_game_ids:
+                    continue
+                seen_game_ids.add(game_id)
+                normalized = _game_from_stats_scoreboard(
+                    header,
+                    lines_by_game.get(game_id, []),
+                    scoreboard_date,
+                )
+                if normalized:
+                    games.append(normalized)
         LOG.info("scoreboard returned %s games", len(games))
     except Exception as exc:
         LOG.exception("scoreboard error")
-        return updated, None, [], _friendly_request_error("today's scoreboard", exc)
+        context = "today's scoreboard" if is_today else f"the scoreboard for {scoreboard_date}"
+        return updated, None, [], _friendly_request_error(context, exc), scoreboard_date, is_today
 
     summaries = [_summarize_game(g) for g in games]
-    return updated, games, summaries, None
+    return updated, games, summaries, None, scoreboard_date, is_today
 
 
-def build_scoreboard_state():
-    updated, games, summaries, error = _load_scoreboard_snapshot()
+def build_scoreboard_state(scoreboard_date=None):
+    updated, games, summaries, error, scoreboard_date, is_today = _load_scoreboard_snapshot(scoreboard_date)
     if error:
         return _apply_scoreboard_polling({
             "status": "error",
@@ -1343,6 +1517,8 @@ def build_scoreboard_state():
             "error": error,
             "games": [],
             "hasLiveGames": False,
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
         })
 
     if not games:
@@ -1351,6 +1527,8 @@ def build_scoreboard_state():
             "updated": updated,
             "games": [],
             "hasLiveGames": False,
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
         })
 
     return _apply_scoreboard_polling({
@@ -1358,17 +1536,21 @@ def build_scoreboard_state():
         "updated": updated,
         "games": summaries,
         "hasLiveGames": any(game.get("statusKey") == "live" for game in summaries),
+        "scoreboardDate": scoreboard_date,
+        "isToday": is_today,
     })
 
 
-def build_state(game_id=None):
-    updated, games, summaries, error = _load_scoreboard_snapshot()
+def build_state(game_id=None, scoreboard_date=None):
+    updated, games, summaries, error, scoreboard_date, is_today = _load_scoreboard_snapshot(scoreboard_date)
     if error:
         return _apply_detail_polling({
             "status": "error",
             "updated": updated,
             "error": error,
             "games": [],
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
         })
 
     LOG.info("build_state start")
@@ -1378,6 +1560,8 @@ def build_state(game_id=None):
             "status": "no_games",
             "updated": updated,
             "games": [],
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
         })
 
     if not game_id:
@@ -1385,6 +1569,8 @@ def build_state(game_id=None):
             "status": "select_game",
             "updated": updated,
             "games": summaries,
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
         })
 
     selected_game = next((g for g in games if g.get("gameId") == game_id), None)
@@ -1394,6 +1580,8 @@ def build_state(game_id=None):
             "status": "game_not_found",
             "updated": updated,
             "games": summaries,
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
         })
 
     game_status = selected_game.get("gameStatus")
@@ -1430,6 +1618,8 @@ def build_state(game_id=None):
             "home": {**home_fallback, "stats": {}, "players": [], "onCourt": []},
             "away": {**away_fallback, "stats": {}, "players": [], "onCourt": []},
             "error": None,
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
         })
 
     cache = BOX_CACHE.get(base_game["gameId"])
@@ -1463,6 +1653,8 @@ def build_state(game_id=None):
             "home": home,
             "away": away,
             "error": "Using cached data during API backoff.",
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
         })
 
     error = None
@@ -1511,6 +1703,8 @@ def build_state(game_id=None):
                 "home": home,
                 "away": away,
                 "error": "Using cached data after boxscore error.",
+                "scoreboardDate": scoreboard_date,
+                "isToday": is_today,
             })
 
     game_data = box.get("game") or {}
@@ -1584,6 +1778,8 @@ def build_state(game_id=None):
         "home": home,
         "away": away,
         "error": error,
+        "scoreboardDate": scoreboard_date,
+        "isToday": is_today,
     })
 
 
@@ -1614,26 +1810,27 @@ class RaptorsLiveAPI:
         if normalized_notify is not None:
             self._notifications_enabled = normalized_notify
 
-    def get_state(self, game_id=None, view_mode=None, notifications_enabled=None):
+    def get_state(self, game_id=None, view_mode=None, notifications_enabled=None, scoreboard_date=None):
         LOG.info("js->get_state called")
         self._sync_runtime_options(view_mode, notifications_enabled)
-        state = build_state(game_id)
+        state = build_state(game_id, scoreboard_date)
         with self._lock:
             self._last_state = state
         LOG.info("js->get_state returning %s", state.get("status"))
         return state
 
-    def get_scoreboard(self, selected_game_id=None, view_mode=None, notifications_enabled=None):
+    def get_scoreboard(self, selected_game_id=None, view_mode=None, notifications_enabled=None, scoreboard_date=None):
         LOG.info("js->get_scoreboard called")
         self._sync_runtime_options(view_mode, notifications_enabled)
-        state = build_scoreboard_state()
-        self._notifier.maybe_notify_games(
-            state.get("games") or [],
-            set(self._favorites),
-            selected_game_id,
-            self._view_mode,
-            self._notifications_enabled,
-        )
+        state = build_scoreboard_state(scoreboard_date)
+        if state.get("isToday"):
+            self._notifier.maybe_notify_games(
+                state.get("games") or [],
+                set(self._favorites),
+                selected_game_id,
+                self._view_mode,
+                self._notifications_enabled,
+            )
         with self._lock:
             self._last_scoreboard_state = state
         LOG.info("js->get_scoreboard returning %s", state.get("status"))
@@ -1730,7 +1927,8 @@ if __name__ == "__main__":
                 game_id = (query.get("gameId") or [""])[0] or None
                 view_mode = (query.get("view") or [""])[0] or None
                 notify = (query.get("notify") or [""])[0] or None
-                state = api.get_state(game_id, view_mode, notify)
+                scoreboard_date = (query.get("date") or [""])[0] or None
+                state = api.get_state(game_id, view_mode, notify, scoreboard_date)
                 payload = json.dumps(state).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1744,7 +1942,8 @@ if __name__ == "__main__":
                 selected_game_id = (query.get("selectedGameId") or [""])[0] or None
                 view_mode = (query.get("view") or [""])[0] or None
                 notify = (query.get("notify") or [""])[0] or None
-                state = api.get_scoreboard(selected_game_id, view_mode, notify)
+                scoreboard_date = (query.get("date") or [""])[0] or None
+                state = api.get_scoreboard(selected_game_id, view_mode, notify, scoreboard_date)
                 payload = json.dumps(state).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
