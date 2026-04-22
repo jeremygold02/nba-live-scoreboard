@@ -1294,7 +1294,7 @@ body {
 
 .stats-table th,
 .stats-table td {
-  padding: 8px 6px;
+  padding: 6px 5px;
   text-align: right;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
@@ -1432,6 +1432,21 @@ body.table-compact .stats-table td:nth-child(13),
 body.table-compact .stats-table th:nth-child(14),
 body.table-compact .stats-table td:nth-child(14) {
   display: none;
+}
+
+body.table-compact .stats-table th,
+body.table-compact .stats-table td {
+  padding: 4px 4px;
+}
+
+body.table-compact .player-name {
+  gap: 5px;
+}
+
+body.table-compact .player-name span,
+body.table-compact .player-status,
+body.table-compact .player-name .player-starter {
+  font-size: 9px;
 }
 
 .fallback {
