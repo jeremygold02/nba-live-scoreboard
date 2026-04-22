@@ -1749,7 +1749,7 @@ def build_state(game_id=None, scoreboard_date=None):
     home, away = _apply_on_court_state(home, away, on_court_state)
 
     data_status = None
-    if on_court_state.get("state") in ("stale", "missing"):
+    if game_status == 2 and on_court_state.get("state") in ("stale", "missing"):
         message = on_court_state.get("message") or "On-court lineups are unavailable right now."
         data_status = _build_data_status(
             "partial",
