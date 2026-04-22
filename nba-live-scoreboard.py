@@ -860,7 +860,15 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
 
     actions = (payload.get("game") or {}).get("actions") or []
     if actions:
-        actions = sorted(actions, key=lambda item: item.get("actionNumber") or 0)
+        # The live feed can append corrections with newer action numbers even when the
+        # play itself happened earlier, so orderNumber is the safer chronological key.
+        actions = sorted(
+            actions,
+            key=lambda item: (
+                _coerce_int(item.get("orderNumber")) or 0,
+                _coerce_int(item.get("actionNumber")) or 0,
+            ),
+        )
 
     recent_plays = _merge_recent_plays(
         _extract_recent_plays(actions, home, away),
