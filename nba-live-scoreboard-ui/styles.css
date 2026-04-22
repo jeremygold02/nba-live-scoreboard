@@ -233,12 +233,12 @@ body {
 
 .layout {
   display: grid;
-  gap: 24px;
+  gap: 18px;
 }
 
 .game-view {
   display: grid;
-  gap: 24px;
+  gap: 16px;
 }
 
 .data-banner {
@@ -818,7 +818,7 @@ body {
 .scoreboard__details {
   display: flex;
   justify-content: space-between;
-  margin-top: 12px;
+  margin-top: 8px;
   font-size: 12px;
   color: var(--text-muted);
   flex-wrap: wrap;
@@ -842,8 +842,8 @@ body {
 }
 
 .periods {
-  margin-top: 10px;
-  padding-top: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 1px solid var(--line);
 }
 
@@ -878,9 +878,9 @@ body {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 18px;
-  padding: 16px;
+  padding: 14px;
   display: grid;
-  gap: 12px;
+  gap: 10px;
   animation: fadeUp 0.55s ease-out 0.2s both;
 }
 
@@ -1047,9 +1047,9 @@ body {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 18px;
-  padding: 16px;
+  padding: 14px;
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .comparison__head {
@@ -1187,7 +1187,7 @@ body {
 .tables {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 20px;
+  gap: 16px;
 }
 
 .table-card {
