@@ -553,6 +553,13 @@ def _format_recent_play_description(action, home=None, away=None):
     if not player_label:
         player_label = str(action.get("playerName") or "").strip()
 
+    if upper_description == "PERIOD START":
+        period = _coerce_int(action.get("period"))
+        if period is None or period <= 0:
+            return "Start of period"
+        if period <= 4:
+            return f"Start of {_ordinal_label(period)} quarter"
+        return f"Start of {_ordinal_label(period - 4)} overtime"
     if upper_description == "PERIOD END":
         period = _coerce_int(action.get("period"))
         if period is None or period <= 0:
