@@ -271,8 +271,17 @@ export function createGameDetailRenderer({
     return chip;
   }
 
+  function updateBackToTopVisibility(button, list) {
+    if (!button || !list) return;
+    button.hidden = list.scrollTop <= 12;
+  }
+
   function renderRecentPlays(recentPlays, homeTeam, awayTeam) {
     if (!lastPlayEl) return;
+    const existingList = lastPlayEl.querySelector(".last-play__list");
+    const previousScrollTop = existingList ? existingList.scrollTop : 0;
+    const previousScrollHeight = existingList ? existingList.scrollHeight : 0;
+    const stickToTop = !existingList || previousScrollTop <= 12;
     const plays = recentPlays && Array.isArray(recentPlays.plays) ? recentPlays.plays.filter((play) => play && play.description) : [];
     if (plays.length === 0) {
       lastPlayEl.hidden = true;
@@ -345,7 +354,20 @@ export function createGameDetailRenderer({
       list.appendChild(row);
     });
 
-    lastPlayEl.append(head, list);
+    const backToTop = document.createElement("button");
+    backToTop.type = "button";
+    backToTop.className = "last-play__back-to-top";
+    backToTop.textContent = "↑ Top";
+    backToTop.hidden = true;
+    backToTop.addEventListener("click", () => {
+      list.scrollTo({ top: 0, behavior: "smooth" });
+    });
+
+    list.addEventListener("scroll", () => {
+      updateBackToTopVisibility(backToTop, list);
+    });
+
+    lastPlayEl.append(head, list, backToTop);
 
     if (recentPlays.state === "stale" && recentPlays.message) {
       const note = document.createElement("div");
@@ -353,6 +375,14 @@ export function createGameDetailRenderer({
       note.textContent = recentPlays.message;
       lastPlayEl.appendChild(note);
     }
+
+    if (stickToTop) {
+      list.scrollTop = 0;
+    } else {
+      const scrollDelta = Math.max(0, list.scrollHeight - previousScrollHeight);
+      list.scrollTop = previousScrollTop + scrollDelta;
+    }
+    updateBackToTopVisibility(backToTop, list);
   }
 
   function cell(value) {

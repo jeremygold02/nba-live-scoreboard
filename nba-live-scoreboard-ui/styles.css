@@ -982,6 +982,28 @@ body {
   scrollbar-color: rgba(142, 195, 240, 0.3) transparent;
 }
 
+.last-play__back-to-top {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(142, 195, 240, 0.22);
+  background: rgba(142, 195, 240, 0.08);
+  color: var(--accent-soft);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.last-play__back-to-top:hover {
+  background: rgba(142, 195, 240, 0.14);
+}
+
 .last-play__item {
   display: grid;
   grid-template-columns: 74px minmax(0, 1fr);
