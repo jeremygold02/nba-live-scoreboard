@@ -1012,14 +1012,14 @@ body {
 
 .last-play__back-to-top {
   position: absolute;
-  top: 12px;
+  top: 8px;
   right: 14px;
   z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
-  padding: 6px 12px;
+  min-height: 30px;
+  padding: 5px 12px;
   border-radius: 999px;
   border: 1px solid rgba(142, 195, 240, 0.22);
   background: rgba(142, 195, 240, 0.08);
