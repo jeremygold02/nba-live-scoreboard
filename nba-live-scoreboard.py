@@ -785,6 +785,16 @@ def _join_recent_play_stat_suffixes(*suffixes):
     return f"({', '.join(parts)})" if parts else ""
 
 
+def _append_recent_play_stat_suffix(base, suffix):
+    text = str(base or "").strip()
+    stat_text = str(suffix or "").strip()
+    if not text:
+        return ""
+    if not stat_text:
+        return text
+    return f"{text} {stat_text}"
+
+
 def _recent_play_source_action_numbers(play):
     numbers = []
     for value in (play or {}).get("sourceActionNumbers") or []:
@@ -883,8 +893,7 @@ def _combine_recent_play_pair(newer, older):
             if "turnover" not in foul_base.lower():
                 description = f"{description} turnover"
             stat_suffix = _join_recent_play_stat_suffixes(foul_stats, turnover_stats)
-            if stat_suffix:
-                description = f"{description} {stat_suffix}"
+            description = _append_recent_play_stat_suffix(description, stat_suffix)
             return _build_combined_recent_play(
                 newer,
                 older,
@@ -905,10 +914,7 @@ def _combine_recent_play_pair(newer, older):
         turnover_base, turnover_stats = _split_recent_play_stat_suffix(older.get("description"))
         steal_base, steal_stats = _split_recent_play_stat_suffix(newer.get("description"))
         if turnover_base and steal_base:
-            description = f"{turnover_base}; {steal_base}"
-            stat_suffix = _join_recent_play_stat_suffixes(turnover_stats, steal_stats)
-            if stat_suffix:
-                description = f"{description} {stat_suffix}"
+            description = f"{_append_recent_play_stat_suffix(turnover_base, turnover_stats)}; {_append_recent_play_stat_suffix(steal_base, steal_stats)}"
             return _build_combined_recent_play(
                 newer,
                 older,
@@ -930,9 +936,7 @@ def _combine_recent_play_pair(newer, older):
         block_base, block_stats = _split_recent_play_stat_suffix(newer.get("description"))
         shot_base = re.sub(r"\s*-\s*blocked\b", "", shot_base or "", flags=re.IGNORECASE).strip()
         if shot_base and block_base:
-            description = f"{shot_base}; {block_base}"
-            if block_stats:
-                description = f"{description} {block_stats}"
+            description = f"{shot_base}; {_append_recent_play_stat_suffix(block_base, block_stats)}"
             return _build_combined_recent_play(
                 newer,
                 older,
