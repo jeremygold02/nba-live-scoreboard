@@ -697,6 +697,10 @@ def _normalize_recent_play(action, home=None, away=None):
     description = _format_recent_play_description(action, home, away)
     if not description:
         return None
+    action_number = _coerce_int(action.get("actionNumber"))
+    order_number = _coerce_int(action.get("orderNumber"))
+    person_id = _coerce_int(action.get("personId"))
+    player_name = str(action.get("playerNameI") or action.get("playerName") or "").strip()
     possession_team_id = _coerce_int(action.get("possession"))
     home_id = _coerce_int((home or {}).get("id"))
     away_id = _coerce_int((away or {}).get("id"))
@@ -707,12 +711,16 @@ def _normalize_recent_play(action, home=None, away=None):
         elif away_id is not None and possession_team_id == away_id:
             possession_tricode = (away or {}).get("tricode") or ""
     return {
-        "actionNumber": _coerce_int(action.get("actionNumber")),
+        "actionNumber": action_number,
+        "sourceActionNumbers": [action_number] if action_number is not None else [],
+        "orderNumber": order_number,
         "description": description,
         "actionType": action.get("actionType") or "",
         "subType": action.get("subType") or "",
         "teamTricode": team_tricode,
         "possessionTricode": possession_tricode,
+        "personId": person_id,
+        "playerName": player_name,
         "clock": action.get("clock") or "",
         "period": _coerce_int(action.get("period")),
         "scoreHome": _coerce_int(action.get("scoreHome")),
@@ -746,6 +754,215 @@ def _extract_recent_plays(actions, home=None, away=None, limit=None):
     return plays or (fallback[:limit] if limit is not None else fallback)
 
 
+_RECENT_PLAY_STAT_SUFFIX_PATTERN = re.compile(
+    r"\((\d+)\s+(?:point|points|assist|assists|steal|steals|foul|fouls|block|blocks|turnover|turnovers|rebound|rebounds)\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _split_recent_play_stat_suffix(description):
+    text = re.sub(r"\s+", " ", str(description or "")).strip()
+    match = _RECENT_PLAY_STAT_SUFFIX_PATTERN.search(text)
+    if not match:
+        return text, ""
+    return text[:match.start()].rstrip(), match.group(0)
+
+
+def _join_recent_play_stat_suffixes(*suffixes):
+    parts = []
+    seen = set()
+    for suffix in suffixes:
+        value = str(suffix or "").strip()
+        if value.startswith("(") and value.endswith(")"):
+            value = value[1:-1].strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(value)
+    return f"({', '.join(parts)})" if parts else ""
+
+
+def _recent_play_source_action_numbers(play):
+    numbers = []
+    for value in (play or {}).get("sourceActionNumbers") or []:
+        number = _coerce_int(value)
+        if number is not None:
+            numbers.append(number)
+    if numbers:
+        return numbers
+    action_number = _coerce_int((play or {}).get("actionNumber"))
+    return [action_number] if action_number is not None else []
+
+
+def _same_recent_play_window(newer, older, max_order_gap=40000):
+    if not newer or not older:
+        return False
+    if (newer.get("period") or 0) != (older.get("period") or 0):
+        return False
+    if (newer.get("clock") or "") != (older.get("clock") or ""):
+        return False
+    if _coerce_int(newer.get("scoreHome")) != _coerce_int(older.get("scoreHome")):
+        return False
+    if _coerce_int(newer.get("scoreAway")) != _coerce_int(older.get("scoreAway")):
+        return False
+    newer_order = _coerce_int(newer.get("orderNumber"))
+    older_order = _coerce_int(older.get("orderNumber"))
+    if newer_order is not None and older_order is not None:
+        return 0 < (newer_order - older_order) <= max_order_gap
+    newer_action = _coerce_int(newer.get("actionNumber"))
+    older_action = _coerce_int(older.get("actionNumber"))
+    if newer_action is not None and older_action is not None:
+        return 0 < (newer_action - older_action) <= 3
+    return False
+
+
+def _same_recent_play_person(first, second):
+    first_person = _coerce_int((first or {}).get("personId"))
+    second_person = _coerce_int((second or {}).get("personId"))
+    if first_person is not None and second_person is not None:
+        return first_person == second_person
+    first_name = str((first or {}).get("playerName") or "").strip().lower()
+    second_name = str((second or {}).get("playerName") or "").strip().lower()
+    return bool(first_name and second_name and first_name == second_name)
+
+
+def _build_combined_recent_play(newer, older, description, *, action_type, sub_type, team_tricode, possession_tricode):
+    source_action_numbers = sorted(
+        set(_recent_play_source_action_numbers(newer) + _recent_play_source_action_numbers(older)),
+        reverse=True,
+    )
+    order_numbers = [
+        _coerce_int((newer or {}).get("orderNumber")),
+        _coerce_int((older or {}).get("orderNumber")),
+    ]
+    order_numbers = [value for value in order_numbers if value is not None]
+    return {
+        "actionNumber": max(source_action_numbers) if source_action_numbers else _coerce_int((newer or {}).get("actionNumber")),
+        "sourceActionNumbers": source_action_numbers,
+        "orderNumber": max(order_numbers) if order_numbers else None,
+        "description": description,
+        "actionType": action_type,
+        "subType": sub_type,
+        "teamTricode": team_tricode or "",
+        "possessionTricode": possession_tricode or "",
+        "personId": _coerce_int((older or {}).get("personId")) or _coerce_int((newer or {}).get("personId")),
+        "playerName": str((older or {}).get("playerName") or (newer or {}).get("playerName") or "").strip(),
+        "clock": (newer or {}).get("clock") or (older or {}).get("clock") or "",
+        "period": _coerce_int((newer or {}).get("period")) or _coerce_int((older or {}).get("period")),
+        "scoreHome": _coerce_int((newer or {}).get("scoreHome")),
+        "scoreAway": _coerce_int((newer or {}).get("scoreAway")),
+    }
+
+
+def _combine_recent_play_pair(newer, older):
+    if not _same_recent_play_window(newer, older):
+        return None
+
+    newer_action = str((newer or {}).get("actionType") or "").strip().lower()
+    older_action = str((older or {}).get("actionType") or "").strip().lower()
+    newer_subtype = str((newer or {}).get("subType") or "").strip().lower()
+    older_subtype = str((older or {}).get("subType") or "").strip().lower()
+    newer_team = str((newer or {}).get("teamTricode") or "").strip().upper()
+    older_team = str((older or {}).get("teamTricode") or "").strip().upper()
+
+    if (
+        newer_action == "turnover"
+        and newer_subtype == "offensive foul"
+        and older_action == "foul"
+        and older_subtype == "offensive"
+        and _same_recent_play_person(newer, older)
+        and (not newer_team or not older_team or newer_team == older_team)
+    ):
+        foul_base, foul_stats = _split_recent_play_stat_suffix(older.get("description"))
+        _, turnover_stats = _split_recent_play_stat_suffix(newer.get("description"))
+        if foul_base:
+            description = foul_base
+            if "turnover" not in foul_base.lower():
+                description = f"{description} turnover"
+            stat_suffix = _join_recent_play_stat_suffixes(foul_stats, turnover_stats)
+            if stat_suffix:
+                description = f"{description} {stat_suffix}"
+            return _build_combined_recent_play(
+                newer,
+                older,
+                description,
+                action_type="turnover",
+                sub_type="offensive foul",
+                team_tricode=older_team or newer_team,
+                possession_tricode=(newer or {}).get("possessionTricode") or (older or {}).get("possessionTricode") or "",
+            )
+
+    if (
+        newer_action == "steal"
+        and older_action == "turnover"
+        and newer_team
+        and older_team
+        and newer_team != older_team
+    ):
+        turnover_base, turnover_stats = _split_recent_play_stat_suffix(older.get("description"))
+        steal_base, steal_stats = _split_recent_play_stat_suffix(newer.get("description"))
+        if turnover_base and steal_base:
+            description = f"{turnover_base}; {steal_base}"
+            stat_suffix = _join_recent_play_stat_suffixes(turnover_stats, steal_stats)
+            if stat_suffix:
+                description = f"{description} {stat_suffix}"
+            return _build_combined_recent_play(
+                newer,
+                older,
+                description,
+                action_type="turnover",
+                sub_type=(older or {}).get("subType") or "",
+                team_tricode=older_team,
+                possession_tricode=newer_team or (newer or {}).get("possessionTricode") or "",
+            )
+
+    if (
+        newer_action == "block"
+        and older_action in {"2pt", "3pt"}
+        and newer_team
+        and older_team
+        and newer_team != older_team
+    ):
+        shot_base, _ = _split_recent_play_stat_suffix(older.get("description"))
+        block_base, block_stats = _split_recent_play_stat_suffix(newer.get("description"))
+        shot_base = re.sub(r"\s*-\s*blocked\b", "", shot_base or "", flags=re.IGNORECASE).strip()
+        if shot_base and block_base:
+            description = f"{shot_base}; {block_base}"
+            if block_stats:
+                description = f"{description} {block_stats}"
+            return _build_combined_recent_play(
+                newer,
+                older,
+                description,
+                action_type="block",
+                sub_type=(newer or {}).get("subType") or "",
+                team_tricode=newer_team,
+                possession_tricode=(newer or {}).get("possessionTricode") or "",
+            )
+
+    return None
+
+
+def _combine_adjacent_recent_plays(plays):
+    combined = []
+    index = 0
+    recent_plays = list(plays or [])
+    while index < len(recent_plays):
+        newer = recent_plays[index]
+        older = recent_plays[index + 1] if index + 1 < len(recent_plays) else None
+        merged = _combine_recent_play_pair(newer, older) if older else None
+        if merged:
+            combined.append(merged)
+            index += 2
+            continue
+        combined.append(newer)
+        index += 1
+    return combined
+
+
 def _merge_recent_plays(current, cached, limit=None):
     merged = []
     seen = set()
@@ -753,18 +970,21 @@ def _merge_recent_plays(current, cached, limit=None):
         for play in source:
             if not play:
                 continue
-            action_number = _coerce_int(play.get("actionNumber"))
-            unique_key = action_number
-            if unique_key is None:
+            source_action_numbers = _recent_play_source_action_numbers(play)
+            if source_action_numbers and any(number in seen for number in source_action_numbers):
+                continue
+            if source_action_numbers:
+                seen.update(source_action_numbers)
+            else:
                 unique_key = (
                     play.get("description") or "",
                     play.get("clock") or "",
                     play.get("period") or "",
                     play.get("teamTricode") or "",
                 )
-            if unique_key in seen:
-                continue
-            seen.add(unique_key)
+                if unique_key in seen:
+                    continue
+                seen.add(unique_key)
             merged.append(play)
             if limit is not None and len(merged) >= limit:
                 return merged
@@ -871,7 +1091,7 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
         )
 
     recent_plays = _merge_recent_plays(
-        _extract_recent_plays(actions, home, away),
+        _combine_adjacent_recent_plays(_extract_recent_plays(actions, home, away)),
         cached.get("recentPlays"),
     )
 
