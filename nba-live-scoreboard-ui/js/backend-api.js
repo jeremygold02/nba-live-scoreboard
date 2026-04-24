@@ -30,12 +30,12 @@ export async function persistFavorites(payload) {
   return null;
 }
 
-export async function fetchScoreboardState({ selectedGameId, view, notificationsEnabled, scoreboardDate }) {
+export async function fetchScoreboardState({ selectedGameId, view, scoreboardDate }) {
   if (canUsePywebview() && window.pywebview.api.get_scoreboard) {
-    return window.pywebview.api.get_scoreboard(selectedGameId || null, view, notificationsEnabled, scoreboardDate || null);
+    return window.pywebview.api.get_scoreboard(selectedGameId || null, view, scoreboardDate || null);
   }
   if (canUsePywebview()) {
-    return window.pywebview.api.get_state(null, view, notificationsEnabled, scoreboardDate || null);
+    return window.pywebview.api.get_state(null, view, scoreboardDate || null);
   }
   return {
     status: "error",
@@ -44,9 +44,9 @@ export async function fetchScoreboardState({ selectedGameId, view, notifications
   };
 }
 
-export async function fetchDetailState({ selectedGameId, view, notificationsEnabled, scoreboardDate }) {
+export async function fetchDetailState({ selectedGameId, view, scoreboardDate }) {
   if (canUsePywebview()) {
-    return window.pywebview.api.get_state(selectedGameId || null, view, notificationsEnabled, scoreboardDate || null);
+    return window.pywebview.api.get_state(selectedGameId || null, view, scoreboardDate || null);
   }
   return {
     status: "error",

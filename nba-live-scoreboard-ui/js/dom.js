@@ -36,7 +36,6 @@ export const gameViewEl = document.getElementById("game-view");
 export const backBtn = document.getElementById("back-to-list");
 export const tableToggleBtn = document.getElementById("table-toggle");
 export const statFlashToggleBtn = document.getElementById("stat-flash-toggle");
-export const notificationsToggleBtn = document.getElementById("notifications-toggle");
 export const fallbackEl = document.getElementById("fallback");
 export const dataBannerEl = document.getElementById("data-banner");
 export const scoreboardEl = document.getElementById("scoreboard");

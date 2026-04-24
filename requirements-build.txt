@@ -1,5 +1,4 @@
 nba_api
-plyer
 pyinstaller
 pywebview
 requests

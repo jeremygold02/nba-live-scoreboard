@@ -14,11 +14,6 @@ from requests import exceptions as requests_exceptions
 from nba_api.live.nba.endpoints import scoreboard, boxscore, playbyplay
 from nba_api.stats.endpoints import scoreboardv2
 
-try:
-    from plyer import notification as plyer_notification
-except Exception:
-    plyer_notification = None
-
 REFRESH_SECONDS = 10
 LIVE_REQUEST_TIMEOUT_SECONDS = 15
 LIVE_REQUEST_RETRY_ATTEMPTS = 3
@@ -46,7 +41,6 @@ DEFAULT_UI_PREFERENCES = {
     "tableView": "expanded",
     "zoomLevel": "1",
     "statFlashEnabled": True,
-    "notificationsEnabled": False,
 }
 FIREFOX_NBA_STATS_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
@@ -1488,10 +1482,6 @@ def _normalize_ui_preferences(preferences):
     if stat_flash is not None:
         result["statFlashEnabled"] = stat_flash
 
-    notifications_enabled = _coerce_bool(preferences.get("notificationsEnabled"))
-    if notifications_enabled is not None:
-        result["notificationsEnabled"] = notifications_enabled
-
     return result
 
 
@@ -1562,126 +1552,12 @@ def _build_data_status(level, title, message, updated, issues=None):
     }
 
 
-def _clock_to_seconds(value):
-    if not value:
-        return None
-    text = str(value)
-    iso_match = re.match(r"PT(\d+)M(\d+(?:\.\d+)?)S", text)
-    if iso_match:
-        minutes = int(iso_match.group(1))
-        seconds = float(iso_match.group(2))
-        return int(minutes * 60 + seconds)
-    simple_match = re.match(r"(\d+):(\d{2})", text)
-    if simple_match:
-        return int(simple_match.group(1)) * 60 + int(simple_match.group(2))
-    return None
-
-
 def _has_favorite_team(game, favorite_tricodes):
     if not game or not favorite_tricodes:
         return False
     home = (game.get("home") or {}).get("tricode")
     away = (game.get("away") or {}).get("tricode")
     return home in favorite_tricodes or away in favorite_tricodes
-
-
-class GameEventNotifier:
-    def __init__(self):
-        self._last_state = {}
-        self._sent_events = {}
-
-    def _send(self, game_id, event_key, title, message):
-        if not plyer_notification:
-            return
-        sent = self._sent_events.setdefault(game_id, set())
-        if event_key in sent:
-            return
-        try:
-            plyer_notification.notify(
-                title=title,
-                message=message,
-                app_name="NBA Live Scoreboard",
-                timeout=6,
-            )
-            sent.add(event_key)
-        except Exception:
-            LOG.exception("notification error")
-
-    def maybe_notify_games(self, games, favorite_tricodes, selected_game_id, view_mode, enabled=True):
-        for game in games or []:
-            game_id = game.get("gameId")
-            if not game_id:
-                continue
-
-            status_key = game.get("statusKey") or "scheduled"
-            period = _coerce_int(game.get("period"))
-            home = game.get("home") or {}
-            away = game.get("away") or {}
-            home_score = _coerce_int(home.get("score")) or 0
-            away_score = _coerce_int(away.get("score")) or 0
-            clock_seconds = _clock_to_seconds(game.get("clock"))
-            tracked = bool(selected_game_id and game_id == selected_game_id) or _has_favorite_team(game, favorite_tricodes)
-
-            prev = self._last_state.get(game_id)
-            self._last_state[game_id] = {
-                "statusKey": status_key,
-                "period": period,
-                "homeScore": home_score,
-                "awayScore": away_score,
-                "clockSeconds": clock_seconds,
-            }
-
-            if not prev or not enabled or not plyer_notification or not tracked:
-                continue
-
-            prev_status = prev.get("statusKey")
-            prev_period = prev.get("period")
-            period_bumped = bool(prev_period and period and period > prev_period)
-            margin = abs(home_score - away_score)
-            include_score = _normalize_view_mode(view_mode) in ("full", "compact")
-            title = _format_matchup_title(home, away)
-            score_line = _format_score_line(home, away)
-            is_selected = bool(selected_game_id and game_id == selected_game_id)
-            events = []
-
-            if prev_status != "live" and status_key == "live":
-                events.append(("game_start", "Game Started"))
-
-            if is_selected and period_bumped:
-                end_label = _format_period_end(prev_period)
-                if end_label:
-                    events.append((f"period_end_{prev_period}", end_label))
-                start_label = _format_period_start(period)
-                if start_label and period and period > 1:
-                    events.append((f"period_start_{period}", start_label))
-
-            if status_key == "live" and period and period > 4:
-                if prev_period is None or prev_period < period:
-                    events.append((f"overtime_{period}", f"{_format_ot_label(period)} Started"))
-
-            if (
-                status_key == "live"
-                and period
-                and period >= 4
-                and clock_seconds is not None
-                and clock_seconds <= 300
-                and margin <= 5
-            ):
-                events.append((f"close_game_{period}", "Close Game"))
-
-            if prev_status == "live" and status_key == "final":
-                if is_selected and period and not period_bumped:
-                    end_label = _format_period_end(period)
-                    if end_label:
-                        events.append((f"period_end_{period}", end_label))
-                events.append(("game_final", "Final"))
-
-            for event_key, message in events:
-                if include_score and score_line:
-                    body = f"{message} | {score_line}"
-                else:
-                    body = message
-                self._send(game_id, event_key, title, body)
 
 
 def _load_scoreboard_snapshot(scoreboard_date=None):
@@ -2030,39 +1906,26 @@ class RaptorsLiveAPI:
         }
         self._favorites = _load_favorites()
         self._preferences = _load_ui_preferences()
-        self._notifier = GameEventNotifier()
         self._view_mode = self._preferences.get("scoreboardView", "hidden")
-        self._notifications_enabled = bool(self._preferences.get("notificationsEnabled"))
 
-    def _sync_runtime_options(self, view_mode=None, notifications_enabled=None):
+    def _sync_runtime_options(self, view_mode=None):
         normalized_view = _normalize_view_mode(view_mode)
         if normalized_view:
             self._view_mode = normalized_view
-        normalized_notify = _coerce_bool(notifications_enabled)
-        if normalized_notify is not None:
-            self._notifications_enabled = normalized_notify
 
-    def get_state(self, game_id=None, view_mode=None, notifications_enabled=None, scoreboard_date=None):
+    def get_state(self, game_id=None, view_mode=None, scoreboard_date=None):
         LOG.info("js->get_state called")
-        self._sync_runtime_options(view_mode, notifications_enabled)
+        self._sync_runtime_options(view_mode)
         state = build_state(game_id, scoreboard_date)
         with self._lock:
             self._last_state = state
         LOG.info("js->get_state returning %s", state.get("status"))
         return state
 
-    def get_scoreboard(self, selected_game_id=None, view_mode=None, notifications_enabled=None, scoreboard_date=None):
+    def get_scoreboard(self, selected_game_id=None, view_mode=None, scoreboard_date=None):
         LOG.info("js->get_scoreboard called")
-        self._sync_runtime_options(view_mode, notifications_enabled)
+        self._sync_runtime_options(view_mode)
         state = build_scoreboard_state(scoreboard_date)
-        if state.get("isToday"):
-            self._notifier.maybe_notify_games(
-                state.get("games") or [],
-                set(self._favorites),
-                selected_game_id,
-                self._view_mode,
-                self._notifications_enabled,
-            )
         with self._lock:
             self._last_scoreboard_state = state
         LOG.info("js->get_scoreboard returning %s", state.get("status"))
@@ -2108,7 +1971,6 @@ class RaptorsLiveAPI:
             normalized = _normalize_ui_preferences(merged)
             self._preferences = normalized
             self._view_mode = normalized.get("scoreboardView", self._view_mode)
-            self._notifications_enabled = bool(normalized.get("notificationsEnabled"))
 
         saved = _save_ui_preferences(normalized)
         return {
@@ -2158,9 +2020,8 @@ if __name__ == "__main__":
                 query = parse_qs(parsed.query)
                 game_id = (query.get("gameId") or [""])[0] or None
                 view_mode = (query.get("view") or [""])[0] or None
-                notify = (query.get("notify") or [""])[0] or None
                 scoreboard_date = (query.get("date") or [""])[0] or None
-                state = api.get_state(game_id, view_mode, notify, scoreboard_date)
+                state = api.get_state(game_id, view_mode, scoreboard_date)
                 payload = json.dumps(state).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -2173,9 +2034,8 @@ if __name__ == "__main__":
                 query = parse_qs(parsed.query)
                 selected_game_id = (query.get("selectedGameId") or [""])[0] or None
                 view_mode = (query.get("view") or [""])[0] or None
-                notify = (query.get("notify") or [""])[0] or None
                 scoreboard_date = (query.get("date") or [""])[0] or None
-                state = api.get_scoreboard(selected_game_id, view_mode, notify, scoreboard_date)
+                state = api.get_scoreboard(selected_game_id, view_mode, scoreboard_date)
                 payload = json.dumps(state).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

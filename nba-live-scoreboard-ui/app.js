@@ -45,7 +45,6 @@ import {
   lastPlayEl,
   lineupsEl,
   listViewEl,
-  notificationsToggleBtn,
   periodsEl,
   periodsToggleBtn,
   refreshBtn,
@@ -124,7 +123,6 @@ let updatedTimer = null;
 let lastGames = [];
 const favoriteTeams = new Set();
 let statFlashEnabled = true;
-let notificationsEnabled = false;
 let scoreboardView = "hidden";
 let tableView = "expanded";
 let zoomLevel = "1";
@@ -397,9 +395,6 @@ async function hydratePreferences() {
   if (Object.prototype.hasOwnProperty.call(preferences, "statFlashEnabled")) {
     setStatFlash(preferences.statFlashEnabled);
   }
-  if (Object.prototype.hasOwnProperty.call(preferences, "notificationsEnabled")) {
-    setNotifications(preferences.notificationsEnabled);
-  }
   const nextZoom = String(preferences.zoomLevel || "1");
   zoomLevel = nextZoom;
   if (zoomSelect) {
@@ -412,13 +407,6 @@ function setStatFlash(enabled) {
   statFlashEnabled = Boolean(enabled);
   if (statFlashToggleBtn) {
     statFlashToggleBtn.textContent = statFlashEnabled ? "Stat Flash: On" : "Stat Flash: Off";
-  }
-}
-
-function setNotifications(enabled) {
-  notificationsEnabled = Boolean(enabled);
-  if (notificationsToggleBtn) {
-    notificationsToggleBtn.textContent = notificationsEnabled ? "Notifications: On" : "Notifications: Off";
   }
 }
 
@@ -482,7 +470,6 @@ function getUIPreferencesPayload() {
     tableView,
     zoomLevel,
     statFlashEnabled,
-    notificationsEnabled,
   };
 }
 
@@ -516,7 +503,6 @@ async function getScoreboardState() {
   return fetchScoreboardState({
     selectedGameId,
     view: getScoreboardView(),
-    notificationsEnabled,
     scoreboardDate,
   });
 }
@@ -525,7 +511,6 @@ async function getDetailState() {
   return fetchDetailState({
     selectedGameId,
     view: getScoreboardView(),
-    notificationsEnabled,
     scoreboardDate,
   });
 }
@@ -918,7 +903,6 @@ window.addEventListener("DOMContentLoaded", () => {
   setScoreboardView(scoreboardView);
   setTableView(tableView);
   setStatFlash(statFlashEnabled);
-  setNotifications(notificationsEnabled);
   if (zoomSelect) {
     zoomSelect.value = zoomLevel;
     document.body.style.zoom = zoomLevel;
@@ -1052,13 +1036,6 @@ window.addEventListener("DOMContentLoaded", () => {
   if (statFlashToggleBtn) {
     statFlashToggleBtn.addEventListener("click", () => {
       setStatFlash(!statFlashEnabled);
-      saveUIPreferences();
-    });
-  }
-
-  if (notificationsToggleBtn) {
-    notificationsToggleBtn.addEventListener("click", () => {
-      setNotifications(!notificationsEnabled);
       saveUIPreferences();
     });
   }
