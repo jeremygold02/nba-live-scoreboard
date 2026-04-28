@@ -198,6 +198,16 @@ export function createGameDetailRenderer({
     return chip;
   }
 
+  function buildLastPlayTeamChip(tricode) {
+    const chip = buildLastPlayChip(tricode, "team");
+    const color = getTeamColor(tricode);
+    chip.style.color = "var(--text)";
+    chip.style.fontWeight = "700";
+    chip.style.borderColor = toRgba(color, 0.38);
+    chip.style.background = toRgba(color, 0.18);
+    return chip;
+  }
+
   function isMadeScoringPlay(play) {
     const actionType = play && play.actionType ? String(play.actionType).trim().toLowerCase() : "";
     const description = play && play.description ? String(play.description).trim().toLowerCase() : "";
@@ -319,9 +329,6 @@ export function createGameDetailRenderer({
       time.className = "last-play__time";
       time.textContent = formatRecentPlayMoment(play) || "Recent";
 
-      const content = document.createElement("div");
-      content.className = "last-play__item-content";
-
       const rowMeta = document.createElement("div");
       rowMeta.className = "last-play__item-meta";
 
@@ -329,11 +336,12 @@ export function createGameDetailRenderer({
       const showPossession = actionType !== "period" && actionType !== "game";
       const actionTeamLabel = play.teamTricode ? String(play.teamTricode).trim() : "";
       const possessionLabel = play.possessionTricode ? String(play.possessionTricode).trim() : "";
+      let possessionChip = null;
       if (actionTeamLabel) {
-        rowMeta.appendChild(buildLastPlayChip(actionTeamLabel, "team"));
+        rowMeta.appendChild(buildLastPlayTeamChip(actionTeamLabel));
       }
       if (showPossession && possessionLabel && possessionLabel !== actionTeamLabel) {
-        rowMeta.appendChild(buildLastPlayChip(`${possessionLabel} Possession`));
+        possessionChip = buildLastPlayChip(`${possessionLabel} Possession`);
       }
       const scoreChip = buildRecentPlayScoreChip(play, homeTeam, awayTeam);
       if (scoreChip) {
@@ -344,13 +352,14 @@ export function createGameDetailRenderer({
       description.className = "last-play__description";
       description.textContent = String(play.description).trim();
 
+      row.appendChild(time);
       if (rowMeta.childNodes.length > 0) {
-        content.append(rowMeta, description);
-      } else {
-        content.appendChild(description);
+        row.appendChild(rowMeta);
       }
-
-      row.append(time, content);
+      row.appendChild(description);
+      if (possessionChip) {
+        row.appendChild(possessionChip);
+      }
       list.appendChild(row);
     });
 
