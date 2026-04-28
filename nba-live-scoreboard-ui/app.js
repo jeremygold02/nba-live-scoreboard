@@ -113,6 +113,8 @@ let scoreboardRefreshTimer = null;
 let detailRefreshTimer = null;
 let isScoreboardRefreshing = false;
 let isDetailRefreshing = false;
+let pendingDetailRefresh = false;
+let pendingDetailRefreshBypassThrottle = false;
 let lastScoreboardRefreshAt = 0;
 let lastDetailRefreshAt = 0;
 let pywebviewReady = false;
@@ -435,6 +437,8 @@ function setSelectedGameId(gameId) {
     showGameView();
     refreshDetail({ bypassThrottle: changed });
   } else {
+    pendingDetailRefresh = false;
+    pendingDetailRefreshBypassThrottle = false;
     showListView();
     clearDetailRefreshTimer();
   }
@@ -741,10 +745,14 @@ async function refreshScoreboard(options = {}) {
 
 async function refreshDetail(options = {}) {
   if (!selectedGameId) {
+    pendingDetailRefresh = false;
+    pendingDetailRefreshBypassThrottle = false;
     clearDetailRefreshTimer();
     return;
   }
   if (isDetailRefreshing) {
+    pendingDetailRefresh = true;
+    pendingDetailRefreshBypassThrottle = pendingDetailRefreshBypassThrottle || !!options.bypassThrottle;
     return;
   }
   if (!canUsePywebview()) {
@@ -857,6 +865,12 @@ async function refreshDetail(options = {}) {
     );
   } finally {
     isDetailRefreshing = false;
+    if (pendingDetailRefresh && selectedGameId) {
+      const rerunBypassThrottle = pendingDetailRefreshBypassThrottle;
+      pendingDetailRefresh = false;
+      pendingDetailRefreshBypassThrottle = false;
+      refreshDetail({ bypassThrottle: rerunBypassThrottle });
+    }
   }
 }
 

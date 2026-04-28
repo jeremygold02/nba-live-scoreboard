@@ -198,13 +198,26 @@ export function createGameDetailRenderer({
     return chip;
   }
 
+  function getReadableChipTextColor(hex) {
+    const value = String(hex || "").replace("#", "").trim();
+    if (!/^[0-9a-fA-F]{6}$/.test(value)) {
+      return "#f5f7fb";
+    }
+    const r = parseInt(value.slice(0, 2), 16);
+    const g = parseInt(value.slice(2, 4), 16);
+    const b = parseInt(value.slice(4, 6), 16);
+    const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    return luminance > 0.58 ? "#0b1220" : "#f5f7fb";
+  }
+
   function buildLastPlayTeamChip(tricode) {
     const chip = buildLastPlayChip(tricode, "team");
     const color = getTeamColor(tricode);
-    chip.style.color = "var(--text)";
+    chip.style.color = getReadableChipTextColor(color);
     chip.style.fontWeight = "700";
-    chip.style.borderColor = toRgba(color, 0.38);
-    chip.style.background = toRgba(color, 0.18);
+    chip.style.borderColor = toRgba(color, 0.88);
+    chip.style.background = color;
+    chip.style.boxShadow = `inset 0 0 0 1px ${toRgba(color, 0.25)}`;
     return chip;
   }
 
