@@ -224,11 +224,13 @@ export function createGameDetailRenderer({
   function isMadeScoringPlay(play) {
     const actionType = play && play.actionType ? String(play.actionType).trim().toLowerCase() : "";
     const description = play && play.description ? String(play.description).trim().toLowerCase() : "";
+    const isMiss = description.includes(" misses ") || description.includes(" missed ");
+    const isMake = description.includes(" makes ") || description.includes(" made ");
     if (actionType === "2pt" || actionType === "3pt") {
-      return !description.includes("missed");
+      return isMake && !isMiss;
     }
     if (actionType === "freethrow") {
-      return description.includes(" makes free throw") || description.includes(" made free throw");
+      return isMake && !isMiss;
     }
     return false;
   }
