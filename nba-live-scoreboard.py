@@ -10,8 +10,8 @@ from pathlib import Path
 from socketserver import TCPServer
 
 import webview
+import requests
 from requests import exceptions as requests_exceptions
-from nba_api.live.nba.endpoints import scoreboard, boxscore, playbyplay
 from nba_api.stats.endpoints import scoreboardv2
 
 REFRESH_SECONDS = 10
@@ -36,11 +36,23 @@ PBP_CACHE = {}
 REQUEST_HEALTH = {}
 FAVORITES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "favorites.json"
 UI_PREFERENCES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "ui-preferences.json"
+LIVE_DATA_BASE_URL = "https://cdn.nba.com/static/json/liveData"
 DEFAULT_UI_PREFERENCES = {
     "scoreboardView": "hidden",
     "tableView": "expanded",
     "zoomLevel": "1",
     "statFlashEnabled": True,
+}
+FIREFOX_NBA_LIVE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+    "Connection": "keep-alive",
+    "Pragma": "no-cache",
+    "Cache-Control": "no-cache",
 }
 FIREFOX_NBA_STATS_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
@@ -301,6 +313,28 @@ def _fetch_live_data(context, factory, request_key=None):
             )
             time.sleep(delay)
     raise last_exc
+
+
+def _fetch_live_json(endpoint, context, request_key=None):
+    normalized_endpoint = str(endpoint or "").lstrip("/")
+    url = f"{LIVE_DATA_BASE_URL}/{normalized_endpoint}"
+
+    def _request():
+        response = requests.get(
+            url,
+            headers=FIREFOX_NBA_LIVE_HEADERS,
+            timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = str(response.text or "").lstrip("\ufeff").strip()
+        if not payload:
+            raise ValueError(f"Empty response from {url}")
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON response from {url}: {exc}") from exc
+
+    return _fetch_live_data(context, _request, request_key=request_key)
 
 
 def _get_backoff(game_id, backoff_map=None):
@@ -1059,12 +1093,9 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
         )
 
     try:
-        payload = _fetch_live_data(
+        payload = _fetch_live_json(
+            f"playbyplay/playbyplay_{game_id}.json",
             "play-by-play",
-            lambda: playbyplay.PlayByPlay(
-                game_id,
-                timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
-            ).get_dict(),
             request_key="playbyplay",
         )
         _clear_backoff(game_id, PBP_BACKOFF)
@@ -1567,12 +1598,12 @@ def _load_scoreboard_snapshot(scoreboard_date=None):
     LOG.info("scoreboard snapshot start for %s", scoreboard_date)
     try:
         if is_today:
-            board = _fetch_live_data(
+            board = _fetch_live_json(
+                "scoreboard/todaysScoreboard_00.json",
                 "today's scoreboard",
-                lambda: scoreboard.ScoreBoard(timeout=LIVE_REQUEST_TIMEOUT_SECONDS),
                 request_key="scoreboard",
             )
-            games = board.games.get_dict()
+            games = (board.get("scoreboard") or {}).get("games") or []
         else:
             board = _fetch_live_data(
                 f"the scoreboard for {scoreboard_date}",
@@ -1768,12 +1799,9 @@ def build_state(game_id=None, scoreboard_date=None):
     error = None
     try:
         LOG.info("fetching boxscore for %s", base_game["gameId"])
-        box = _fetch_live_data(
+        box = _fetch_live_json(
+            f"boxscore/boxscore_{base_game['gameId']}.json",
             "the box score",
-            lambda: boxscore.BoxScore(
-                base_game["gameId"],
-                timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
-            ).get_dict(),
             request_key="boxscore",
         )
         LOG.info("boxscore received")
