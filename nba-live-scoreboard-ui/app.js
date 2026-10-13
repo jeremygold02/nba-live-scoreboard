@@ -109,6 +109,8 @@ import {
   toRgba,
 } from "./js/team-fragments.js";
 
+const SCOREBOARD_ROLLOVER_HOUR = 6;
+
 let scoreboardRefreshTimer = null;
 let detailRefreshTimer = null;
 let isScoreboardRefreshing = false;
@@ -143,6 +145,9 @@ function padDatePart(value) {
 
 function getTodayIsoDate() {
   const now = new Date();
+  if (now.getHours() < SCOREBOARD_ROLLOVER_HOUR) {
+    now.setDate(now.getDate() - 1);
+  }
   return `${now.getFullYear()}-${padDatePart(now.getMonth() + 1)}-${padDatePart(now.getDate())}`;
 }
 

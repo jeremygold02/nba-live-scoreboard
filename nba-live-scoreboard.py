@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 from http.server import SimpleHTTPRequestHandler
+from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 from socketserver import TCPServer
@@ -27,16 +28,19 @@ DETAIL_LIVE_MIN_POLL_MS = 5000
 DETAIL_PARTIAL_POLL_MS = 12000
 DETAIL_IDLE_POLL_MS = 20000
 DETAIL_MAX_POLL_MS = 60000
+SCOREBOARD_ROLLOVER_HOUR = 6
 LOG = logging.getLogger("nba_live_scoreboard")
 BOX_CACHE = {}
 BOX_BACKOFF = {}
 MAX_BACKOFF_SECONDS = 60
 PBP_BACKOFF = {}
 PBP_CACHE = {}
+GAME_PAGE_CACHE = {}
 REQUEST_HEALTH = {}
 FAVORITES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "favorites.json"
 UI_PREFERENCES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "ui-preferences.json"
 LIVE_DATA_BASE_URL = "https://cdn.nba.com/static/json/liveData"
+STATS_DATA_BASE_URL = "https://stats.nba.com/stats"
 DEFAULT_UI_PREFERENCES = {
     "scoreboardView": "hidden",
     "tableView": "expanded",
@@ -97,7 +101,10 @@ def _now_utc_iso():
 
 
 def _local_today_iso():
-    return datetime.now().astimezone().date().isoformat()
+    now = datetime.now().astimezone()
+    if now.hour < SCOREBOARD_ROLLOVER_HOUR:
+        now = now - timedelta(days=1)
+    return now.date().isoformat()
 
 
 def _normalize_scoreboard_date(value):
@@ -315,14 +322,12 @@ def _fetch_live_data(context, factory, request_key=None):
     raise last_exc
 
 
-def _fetch_live_json(endpoint, context, request_key=None):
-    normalized_endpoint = str(endpoint or "").lstrip("/")
-    url = f"{LIVE_DATA_BASE_URL}/{normalized_endpoint}"
-
+def _fetch_json(url, context, headers, request_key=None, params=None):
     def _request():
         response = requests.get(
             url,
-            headers=FIREFOX_NBA_LIVE_HEADERS,
+            headers=headers,
+            params=params,
             timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
@@ -335,6 +340,93 @@ def _fetch_live_json(endpoint, context, request_key=None):
             raise ValueError(f"Invalid JSON response from {url}: {exc}") from exc
 
     return _fetch_live_data(context, _request, request_key=request_key)
+
+
+def _fetch_stats_json(endpoint, context, params, request_key=None):
+    return _fetch_json(
+        f"{STATS_DATA_BASE_URL}/{endpoint}",
+        context,
+        FIREFOX_NBA_STATS_HEADERS,
+        request_key=request_key,
+        params=params,
+    )
+
+
+def _fetch_live_json(endpoint, context, request_key=None, fallback=None):
+    normalized_endpoint = str(endpoint or "").lstrip("/")
+    try:
+        return _fetch_json(
+            f"{LIVE_DATA_BASE_URL}/{normalized_endpoint}",
+            context,
+            FIREFOX_NBA_LIVE_HEADERS,
+            request_key=request_key,
+        )
+    except Exception as exc:
+        if fallback is None:
+            raise
+        LOG.warning("Live feed unavailable for %s: %s; trying the fallback", context, exc)
+        try:
+            result = fallback()
+        except Exception as fallback_exc:
+            _mark_request_failure(request_key, fallback_exc)
+            raise
+        _mark_request_success(request_key)
+        return result
+
+
+class _GamePageParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_payload = False
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self.in_payload = dict(attrs).get("id") == "__NEXT_DATA__"
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.in_payload = False
+
+    def handle_data(self, data):
+        if self.in_payload:
+            self.parts.append(data)
+
+
+def _fetch_game_page(game_id):
+    cached = GAME_PAGE_CACHE.get(game_id)
+    if cached and time.monotonic() - cached["fetched"] < 5:
+        return cached["payload"]
+
+    def _request():
+        response = requests.get(
+            f"https://www.nba.com/game/{game_id}/box-score",
+            headers=FIREFOX_NBA_LIVE_HEADERS,
+            timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        parser = _GamePageParser()
+        parser.feed(response.text)
+        parser.close()
+        if not parser.parts:
+            raise ValueError("NBA game page did not include game data.")
+        page = json.loads("".join(parser.parts))
+        props = (page.get("props") or {}).get("pageProps") or {}
+        game = props.get("game") or {}
+        if game.get("gameId") != game_id:
+            raise ValueError("NBA game page returned data for a different game.")
+        return {"game": game, "playByPlay": props.get("playByPlay")}
+
+    payload = _fetch_live_data("the NBA game page", _request)
+    GAME_PAGE_CACHE[game_id] = {"fetched": time.monotonic(), "payload": payload}
+    return payload
+
+
+def _fetch_game_page_playbyplay(game_id):
+    playbyplay = _fetch_game_page(game_id).get("playByPlay") or {}
+    if playbyplay.get("gameId") != game_id:
+        raise ValueError("NBA game page did not include play-by-play for this game.")
+    return {"game": playbyplay}
 
 
 def _get_backoff(game_id, backoff_map=None):
@@ -1097,6 +1189,7 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
             f"playbyplay/playbyplay_{game_id}.json",
             "play-by-play",
             request_key="playbyplay",
+            fallback=lambda: _fetch_game_page_playbyplay(game_id),
         )
         _clear_backoff(game_id, PBP_BACKOFF)
     except Exception:
@@ -1217,7 +1310,7 @@ def _build_player(player, team_stats, team_minutes):
         "name": name,
         "jerseyNum": player.get("jerseyNum") or "",
         "position": player.get("position") or "",
-        "starter": bool(player.get("starter")),
+        "starter": _coerce_bool(player.get("starter")) is True,
         "status": player.get("status") or "",
         "minutes": minutes,
         "points": points,
@@ -1373,6 +1466,7 @@ def _team_from_boxscore(box_team, fallback, period_count):
 
     return {
         **fallback,
+        "score": box_team.get("score") if box_team.get("score") is not None else fallback.get("score"),
         "stats": {
             "points": _safe_stat(stats, "points"),
             "rebounds": _safe_stat(stats, "reboundsTotal"),
@@ -1602,6 +1696,11 @@ def _load_scoreboard_snapshot(scoreboard_date=None):
                 "scoreboard/todaysScoreboard_00.json",
                 "today's scoreboard",
                 request_key="scoreboard",
+                fallback=lambda: _fetch_stats_json(
+                    "scoreboardv3",
+                    "today's scoreboard",
+                    {"GameDate": scoreboard_date, "LeagueID": "00"},
+                ),
             )
             games = (board.get("scoreboard") or {}).get("games") or []
         else:
@@ -1803,6 +1902,7 @@ def build_state(game_id=None, scoreboard_date=None):
             f"boxscore/boxscore_{base_game['gameId']}.json",
             "the box score",
             request_key="boxscore",
+            fallback=lambda: {"game": _fetch_game_page(base_game["gameId"])["game"]},
         )
         LOG.info("boxscore received")
         _clear_backoff(base_game["gameId"])
@@ -1844,6 +1944,16 @@ def build_state(game_id=None, scoreboard_date=None):
             })
 
     game_data = box.get("game") or {}
+    if game_data:
+        game_status = _coerce_int(game_data.get("gameStatus")) or game_status
+        status_text = game_data.get("gameStatusText") or status_text
+        base_game.update({
+            "status": _map_status(game_status, status_text),
+            "statusKey": _game_status_key(game_status),
+            "statusText": status_text,
+            "period": game_data.get("period") or base_game.get("period"),
+            "clock": game_data.get("gameClock", base_game.get("clock")) or "",
+        })
     period_count = int(game_data.get("period") or base_game.get("period") or 0)
     if period_count <= 0:
         period_count = 4

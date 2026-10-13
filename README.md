@@ -68,7 +68,8 @@ This UI is designed for pywebview only; browser usage is not supported.
 - Favorites stored to `nba-live-scoreboard-ui/resources/favorites.json`.
 
 ### Data and reliability
-- Uses `nba_api.live.nba.endpoints.scoreboard`, `boxscore`, and `playbyplay`.
+- Uses NBA live JSON feeds for the scoreboard, box scores, and play-by-play.
+- If a live feed is blocked or unavailable, today's scoreboard falls back to NBA's Stats API and game details fall back to the official NBA game page.
 - Cached box score and on-court data with exponential backoff on API errors.
 - Falls back to cached data during backoff and surfaces explicit stale/partial-data banners in the UI.
 - Auto refresh interval adapts for live vs idle games and pauses when the page is hidden.
