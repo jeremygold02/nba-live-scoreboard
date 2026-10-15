@@ -70,6 +70,7 @@ This UI is designed for pywebview only; browser usage is not supported.
 ### Data and reliability
 - Uses NBA live JSON feeds for the scoreboard, box scores, and play-by-play.
 - If a live feed is blocked or unavailable, today's scoreboard falls back to NBA's Stats API and game details fall back to the official NBA game page.
+- Rechecks a selected game against its NBA game page when the stats schedule still says "scheduled" after tipoff.
 - Cached box score and on-court data with exponential backoff on API errors.
 - Falls back to cached data during backoff and surfaces explicit stale/partial-data banners in the UI.
 - Auto refresh interval adapts for live vs idle games and pauses when the page is hidden.

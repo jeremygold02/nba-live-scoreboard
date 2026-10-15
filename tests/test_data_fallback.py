@@ -79,7 +79,7 @@ class DataFallbackTests(unittest.TestCase):
         app._fetch_game_page(self.game_id)
         self.assertEqual(app._fetch_game_page_playbyplay(self.game_id), {"game": plays})
         get.assert_called_once()
-        app.GAME_PAGE_CACHE[self.game_id]["fetched"] -= 6
+        app.GAME_PAGE_CACHE[self.game_id]["fetched"] -= 16
         app._fetch_game_page(self.game_id)
         self.assertEqual(get.call_count, 2)
 

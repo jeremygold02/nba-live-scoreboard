@@ -395,7 +395,7 @@ class _GamePageParser(HTMLParser):
 
 def _fetch_game_page(game_id):
     cached = GAME_PAGE_CACHE.get(game_id)
-    if cached and time.monotonic() - cached["fetched"] < 5:
+    if cached and time.monotonic() - cached["fetched"] < 15:
         return cached["payload"]
 
     def _request():
@@ -420,6 +420,51 @@ def _fetch_game_page(game_id):
     payload = _fetch_live_data("the NBA game page", _request)
     GAME_PAGE_CACHE[game_id] = {"fetched": time.monotonic(), "payload": payload}
     return payload
+
+
+def _reconcile_scheduled_game(game, scoreboard_date, is_today):
+    if not game or not is_today or game.get("gameStatus") != 1:
+        return game
+
+    try:
+        tipoff = datetime.fromisoformat(
+            str(game.get("gameTimeUTC") or "").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return game
+    if tipoff.tzinfo is None:
+        tipoff = tipoff.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) < tipoff.astimezone(timezone.utc):
+        return game
+
+    game_id = game.get("gameId")
+    try:
+        page_game = (_fetch_game_page(game_id).get("game") or {}) if game_id else {}
+    except Exception as exc:
+        LOG.warning("Could not verify delayed scoreboard status for %s: %s", game_id, exc)
+        return game
+
+    if page_game.get("gameStatus") not in (2, 3):
+        return game
+
+    reconciled = dict(game)
+    for key in ("gameStatus", "gameStatusText", "period", "gameClock", "gameTimeUTC"):
+        if page_game.get(key) is not None:
+            reconciled[key] = page_game[key]
+    for side in ("homeTeam", "awayTeam"):
+        page_team = page_game.get(side) or {}
+        if not page_team:
+            continue
+        team = dict(reconciled.get(side) or {})
+        team.update(page_team)
+        if "teamWins" in page_team:
+            team["wins"] = page_team["teamWins"]
+        if "teamLosses" in page_team:
+            team["losses"] = page_team["teamLosses"]
+        reconciled[side] = team
+
+    LOG.info("reconciled %s scoreboard status from the NBA game page", game_id)
+    return reconciled
 
 
 def _fetch_game_page_playbyplay(game_id):
@@ -1746,7 +1791,7 @@ def _load_scoreboard_snapshot(scoreboard_date=None):
     return updated, games, summaries, None, scoreboard_date, is_today
 
 
-def build_scoreboard_state(scoreboard_date=None):
+def build_scoreboard_state(scoreboard_date=None, selected_game_id=None):
     updated, games, summaries, error, scoreboard_date, is_today = _load_scoreboard_snapshot(scoreboard_date)
     if error:
         return _apply_scoreboard_polling({
@@ -1768,6 +1813,18 @@ def build_scoreboard_state(scoreboard_date=None):
             "scoreboardDate": scoreboard_date,
             "isToday": is_today,
         })
+
+    selected_game = next(
+        (game for game in games if game.get("gameId") == selected_game_id),
+        None,
+    )
+    reconciled_game = _reconcile_scheduled_game(selected_game, scoreboard_date, is_today)
+    if reconciled_game is not selected_game:
+        games = [
+            reconciled_game if game.get("gameId") == selected_game_id else game
+            for game in games
+        ]
+        summaries = [_summarize_game(game) for game in games]
 
     return _apply_scoreboard_polling({
         "status": "ok",
@@ -1821,6 +1878,15 @@ def build_state(game_id=None, scoreboard_date=None):
             "scoreboardDate": scoreboard_date,
             "isToday": is_today,
         })
+
+    reconciled_game = _reconcile_scheduled_game(selected_game, scoreboard_date, is_today)
+    if reconciled_game is not selected_game:
+        selected_game = reconciled_game
+        games = [
+            selected_game if game.get("gameId") == game_id else game
+            for game in games
+        ]
+        summaries = [_summarize_game(game) for game in games]
 
     game_status = selected_game.get("gameStatus")
     status_text = selected_game.get("gameStatusText") or ""
@@ -2063,7 +2129,7 @@ class RaptorsLiveAPI:
     def get_scoreboard(self, selected_game_id=None, view_mode=None, scoreboard_date=None):
         LOG.info("js->get_scoreboard called")
         self._sync_runtime_options(view_mode)
-        state = build_scoreboard_state(scoreboard_date)
+        state = build_scoreboard_state(scoreboard_date, selected_game_id)
         with self._lock:
             self._last_scoreboard_state = state
         LOG.info("js->get_scoreboard returning %s", state.get("status"))
