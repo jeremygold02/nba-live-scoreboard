@@ -26,6 +26,18 @@ export function getTeamColor(tricode) {
   return teamColors[tricode] || "#2e7ac7";
 }
 
+export function getMatchupColors(homeTricode, awayTricode) {
+  const home = getTeamColor(homeTricode);
+  const away = getTeamColor(awayTricode);
+  const distance = (first, second) => {
+    const channel = (color, offset) => parseInt(color.slice(offset, offset + 2), 16);
+    return Math.hypot(...[1, 3, 5].map((offset) => channel(first, offset) - channel(second, offset)));
+  };
+  if (distance(home, away) >= 100) return { home, away };
+  const alternate = distance(home, "#c4ced4") >= 100 ? "#c4ced4" : "#e6c368";
+  return { home, away: alternate };
+}
+
 export function buildLogoBadge(team) {
   const wrap = document.createElement("span");
   wrap.className = "logo-badge";

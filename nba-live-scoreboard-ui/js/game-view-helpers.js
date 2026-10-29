@@ -60,12 +60,15 @@ export function createGameViewController({
   lineupsEl,
   listViewEl,
   periodsEl,
+  resetGame,
   toRgba,
 }) {
   function clearMatchupTheme() {
     if (gameViewEl) {
       gameViewEl.style.removeProperty("--matchup-a");
       gameViewEl.style.removeProperty("--matchup-b");
+      gameViewEl.style.removeProperty("--away-color");
+      gameViewEl.style.removeProperty("--home-color");
     }
     if (document.body) {
       document.body.style.removeProperty("--matchup-a");
@@ -100,6 +103,7 @@ export function createGameViewController({
   }
 
   function clearGameUI() {
+    resetGame();
     awayCard.innerHTML = "";
     homeCard.innerHTML = "";
     centerCard.innerHTML = "";
@@ -136,6 +140,8 @@ export function createGameViewController({
     const matchupB = toRgba(homeColor, 0.18);
     gameViewEl.style.setProperty("--matchup-a", matchupA);
     gameViewEl.style.setProperty("--matchup-b", matchupB);
+    gameViewEl.style.setProperty("--away-color", awayColor);
+    gameViewEl.style.setProperty("--home-color", homeColor);
     if (document.body) {
       document.body.style.setProperty("--matchup-a", matchupA);
       document.body.style.setProperty("--matchup-b", matchupB);

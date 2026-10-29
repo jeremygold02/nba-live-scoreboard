@@ -22,6 +22,10 @@ The app starts a local server on a random port and opens a window titled "NBA Li
 For the best experience, run the app in fullscreen.
 This UI is designed for pywebview only; browser usage is not supported.
 
+## Automated tests
+
+Run `python -m unittest discover -s tests -v`. Backend tests use mocked data. The UI regression tests use a separate headless browser and mocked desktop API; they do not control the desktop or change saved preferences. They are skipped if Python Playwright or its Chromium browser is not installed. To run them, install the optional test dependency with `python -m pip install playwright` and `python -m playwright install chromium`.
+
 ## Windows build
 - Local EXE builds use the PyInstaller command with `icon.ico` and bundled `nba-live-scoreboard-ui/`.
 - GitHub pushes to `main` run the PyInstaller build directly via `.github/workflows/windows-release.yml` and publish the generated `nba-live-scoreboard.exe` as a GitHub release asset.
@@ -69,11 +73,14 @@ This UI is designed for pywebview only; browser usage is not supported.
 
 ### Data and reliability
 - Uses NBA live JSON feeds for the scoreboard, box scores, and play-by-play.
-- If a live feed is blocked or unavailable, today's scoreboard falls back to NBA's Stats API and game details fall back to the official NBA game page.
-- Rechecks a selected game against its NBA game page when the stats schedule still says "scheduled" after tipoff.
+- If today's live scoreboard feed is blocked or unavailable, the app falls back to the NBA games page and then the Stats API. Other dates use the NBA games page with the Stats API as a fallback; game details fall back to the official NBA game page.
+- Rechecks games after tipoff against their NBA game pages when the stats schedule still says "scheduled", including games on the homepage. Checks run in the background with a bounded number of requests and a cooldown.
 - Cached box score and on-court data with exponential backoff on API errors.
+- List and detail requests share a short-lived scoreboard snapshot. HTTP 429 responses honor the server's `Retry-After` cooldown, or a default cooldown if none is provided.
 - Falls back to cached data during backoff and surfaces explicit stale/partial-data banners in the UI.
-- Auto refresh interval adapts for live vs idle games and pauses when the page is hidden.
+- Auto refresh interval adapts for live vs idle games and continues while the app is in the background or minimized.
+- Temporary stat and hover highlights clear when focus changes; similar matchup colors use a contrasting away-team accent.
+- The local UI server handles concurrent browser requests so idle connections do not stall startup.
 
 ## Controls and views
 - Zoom: change UI scale from the header.
@@ -82,7 +89,7 @@ This UI is designed for pywebview only; browser usage is not supported.
 - Stat flash: toggle per-stat change animation.
 - Back to games: return to the list without reloading.
 - Quarters and Comparison: toggle visibility in the game view.
-- Refresh: force a manual update.
+- Refresh: request an immediate update; a scoreboard fetched in the past two seconds may be reused.
 
 ## Persistence
 - Favorites are saved to `nba-live-scoreboard-ui/resources/favorites.json`.

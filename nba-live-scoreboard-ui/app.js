@@ -33,6 +33,8 @@ import {
   fallbackEl,
   gameFiltersEl,
   gameListDateLabelEl,
+  gameListDateHeadingEl,
+  gameListErrorEl,
   gameSearchInput,
   gameSortSelect,
   gameViewEl,
@@ -105,6 +107,7 @@ import {
   buildScoreBadge,
   formatRecord,
   getTeamColor,
+  getMatchupColors,
   setText,
   toRgba,
 } from "./js/team-fragments.js";
@@ -114,6 +117,8 @@ const SCOREBOARD_ROLLOVER_HOUR = 6;
 let scoreboardRefreshTimer = null;
 let detailRefreshTimer = null;
 let isScoreboardRefreshing = false;
+let pendingScoreboardRefresh = false;
+let pendingScoreboardRefreshBypassThrottle = false;
 let isDetailRefreshing = false;
 let pendingDetailRefresh = false;
 let pendingDetailRefreshBypassThrottle = false;
@@ -121,6 +126,7 @@ let lastScoreboardRefreshAt = 0;
 let lastDetailRefreshAt = 0;
 let pywebviewReady = false;
 let activeCell = null;
+let windowInForeground = true;
 let selectedGameId = "";
 let lastUpdatedAt = null;
 let updatedTimer = null;
@@ -138,6 +144,11 @@ let scoreboardDate = getTodayIsoDate();
 let gameListEmptyMessageOverride = "";
 let startupPromise = null;
 let startupHydrated = false;
+const matchupTeamColors = new Map();
+
+function getMatchupTeamColor(tricode) {
+  return matchupTeamColors.get(tricode) || getTeamColor(tricode);
+}
 
 function padDatePart(value) {
   return String(value).padStart(2, "0");
@@ -190,6 +201,12 @@ function updateScoreboardDateUI() {
   }
   if (gameListDateLabelEl) {
     gameListDateLabelEl.textContent = formatScoreboardDateLabel(normalized);
+  }
+  if (gameListDateHeadingEl) {
+    const [year, month, day] = normalized.split("-").map(Number);
+    gameListDateHeadingEl.textContent = new Date(year, month - 1, day).toLocaleDateString([], {
+      weekday: "long", year: "numeric", month: "long", day: "numeric",
+    });
   }
 }
 
@@ -345,8 +362,8 @@ const detailRenderer = createGameDetailRenderer({
   formatShotPct,
   formatStatLine,
   getGameStatusLabel,
-  getStatFlashEnabled: () => statFlashEnabled,
-  getTeamColor,
+  getStatFlashEnabled: () => statFlashEnabled && windowInForeground && !document.hidden && document.hasFocus(),
+  getTeamColor: getMatchupTeamColor,
   hasNotEntered,
   homeHeader,
   homeLineupEl,
@@ -371,7 +388,7 @@ const { applyMatchupTheme, clearGameUI, clearMatchupTheme, showGameView, showLis
   comparisonBodyEl,
   detailsEl,
   gameViewEl,
-  getTeamColor,
+  getTeamColor: getMatchupTeamColor,
   homeCard,
   homeHeader,
   homeLineupEl,
@@ -380,6 +397,7 @@ const { applyMatchupTheme, clearGameUI, clearMatchupTheme, showGameView, showLis
   lineupsEl,
   listViewEl,
   periodsEl,
+  resetGame: detailRenderer.resetGame,
   toRgba,
 });
 
@@ -432,19 +450,31 @@ function clearFallback() {
 
 function setSelectedGameId(gameId) {
   const previousGameId = selectedGameId;
+  const listHadFocus = listViewEl && listViewEl.contains(document.activeElement);
+  const gameHadFocus = gameViewEl && gameViewEl.contains(document.activeElement);
   selectedGameId = gameId || "";
   const changed = previousGameId !== selectedGameId;
+  if (changed) {
+    clearTransientHighlights();
+    matchupTeamColors.clear();
+  }
   renderGameList(lastGames);
   if (selectedGameId) {
     if (changed) {
       clearGameUI();
     }
     showGameView();
+    if (listHadFocus && backBtn) backBtn.focus({ preventScroll: true });
     refreshDetail({ bypassThrottle: changed });
   } else {
     pendingDetailRefresh = false;
     pendingDetailRefreshBypassThrottle = false;
     showListView();
+    if (gameHadFocus && gamesEl) {
+      const row = [...gamesEl.querySelectorAll(".game-item")].find((item) => item.dataset.gameId === previousGameId);
+      const target = row?.querySelector(".game-item__select") || gameFiltersEl?.querySelector(".is-active");
+      target?.focus({ preventScroll: true });
+    }
     clearDetailRefreshTimer();
   }
 }
@@ -552,7 +582,7 @@ function getRefreshDelay(state, fallbackMs) {
 
 function scheduleScoreboardRefresh(delay) {
   clearScoreboardRefreshTimer();
-  if (document.hidden || !startupHydrated) return;
+  if (!startupHydrated) return;
   scoreboardRefreshTimer = setTimeout(() => {
     scoreboardRefreshTimer = null;
     refreshScoreboard();
@@ -561,7 +591,7 @@ function scheduleScoreboardRefresh(delay) {
 
 function scheduleDetailRefresh(delay) {
   clearDetailRefreshTimer();
-  if (document.hidden || !startupHydrated || !selectedGameId) return;
+  if (!startupHydrated || !selectedGameId) return;
   detailRefreshTimer = setTimeout(() => {
     detailRefreshTimer = null;
     refreshDetail();
@@ -674,6 +704,8 @@ function handleGlobalShortcut(event) {
 
 async function refreshScoreboard(options = {}) {
   if (isScoreboardRefreshing) {
+    pendingScoreboardRefresh = true;
+    pendingScoreboardRefreshBypassThrottle = pendingScoreboardRefreshBypassThrottle || !!options.bypassThrottle;
     return;
   }
   if (!canUsePywebview()) {
@@ -689,17 +721,27 @@ async function refreshScoreboard(options = {}) {
   }
   isScoreboardRefreshing = true;
   lastScoreboardRefreshAt = Date.now();
+  const requestedDate = scoreboardDate;
   try {
     let state;
     try {
       state = await getScoreboardState();
     } catch (err) {
+      if (requestedDate !== scoreboardDate) return;
       if (!selectedGameId) {
-        statusEl.textContent = "error";
-        renderFallback(`API error: ${err}`);
+        statusEl.textContent = "Error";
+        if (gameListErrorEl) {
+          gameListErrorEl.textContent = `Unable to refresh games: ${err}`;
+          gameListErrorEl.hidden = false;
+        }
       }
       scheduleScoreboardRefresh(SCOREBOARD_IDLE_REFRESH_MS);
       return;
+    }
+    if (requestedDate !== scoreboardDate) return;
+    if (gameListErrorEl) {
+      gameListErrorEl.hidden = true;
+      gameListErrorEl.textContent = "";
     }
     if (state.scoreboardDate) {
       scoreboardDate = normalizeScoreboardDate(state.scoreboardDate);
@@ -745,6 +787,12 @@ async function refreshScoreboard(options = {}) {
     scheduleScoreboardRefresh(nextInterval);
   } finally {
     isScoreboardRefreshing = false;
+    if (pendingScoreboardRefresh) {
+      const rerunBypassThrottle = pendingScoreboardRefreshBypassThrottle;
+      pendingScoreboardRefresh = false;
+      pendingScoreboardRefreshBypassThrottle = false;
+      refreshScoreboard({ bypassThrottle: rerunBypassThrottle });
+    }
   }
 }
 
@@ -831,6 +879,9 @@ async function refreshDetail(options = {}) {
     showGameView();
     const home = state.home;
     const away = state.away;
+    const colors = getMatchupColors(home.tricode, away.tricode);
+    matchupTeamColors.set(home.tricode, colors.home);
+    matchupTeamColors.set(away.tricode, colors.away);
 
     detailRenderer.renderTeamCard(awayCard, away);
     detailRenderer.renderTeamCard(homeCard, home);
@@ -909,11 +960,6 @@ function startPollingIfReady() {
   }
 }
 
-function stopPolling() {
-  clearScoreboardRefreshTimer();
-  clearDetailRefreshTimer();
-}
-
 window.addEventListener("DOMContentLoaded", () => {
   setUpdatedTime(new Date().toISOString());
   statusEl.textContent = "Waiting";
@@ -937,12 +983,14 @@ window.addEventListener("DOMContentLoaded", () => {
   startPollingIfReady();
   setupScrollbars();
 
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      stopPolling();
-    } else {
-      startPollingIfReady();
-    }
+  document.addEventListener("visibilitychange", clearTransientHighlights);
+  window.addEventListener("blur", () => {
+    windowInForeground = false;
+    clearTransientHighlights();
+  });
+  window.addEventListener("focus", () => {
+    windowInForeground = true;
+    clearTransientHighlights();
   });
 
   if (zoomSelect) {
@@ -1100,6 +1148,10 @@ function setupScrollbars() {
 }
 
 function handleTableHover(event) {
+  if (!windowInForeground || document.hidden || !document.hasFocus()) {
+    clearTableHover();
+    return;
+  }
   const cell = event.target.closest("td, th");
   if (!cell) return;
   const table = cell.closest(".stats-table");
@@ -1109,7 +1161,7 @@ function handleTableHover(event) {
     return;
   }
 
-  clearTableHighlights(table);
+  clearTableHover();
   activeCell = cell;
 
   const row = cell.parentElement;
@@ -1129,13 +1181,20 @@ function handleTableHover(event) {
 }
 
 function clearTableHover(event) {
-  const related = event.relatedTarget;
+  const related = event && event.relatedTarget;
   if (related && related.closest && related.closest(".stats-table")) {
     return;
   }
   const tables = document.querySelectorAll(".stats-table");
   tables.forEach(clearTableHighlights);
   activeCell = null;
+}
+
+function clearTransientHighlights() {
+  clearTableHover();
+  document.querySelectorAll(".stat-bump, .score-bump").forEach((element) => {
+    element.classList.remove("stat-bump", "score-bump");
+  });
 }
 
 function clearTableHighlights(table) {

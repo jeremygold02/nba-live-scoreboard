@@ -40,6 +40,14 @@ export function createGameDetailRenderer({
   const lastPlayerStats = new Map();
   let periodsOpen = false;
   let comparisonOpen = false;
+  let lastRecentPlaysKey = null;
+
+  function resetGame() {
+    lastScores.clear();
+    tableCache.clear();
+    lastPlayerStats.clear();
+    lastRecentPlaysKey = null;
+  }
 
   function animateScore(scoreEl, team) {
     const key = team.id || team.tricode || "";
@@ -48,6 +56,7 @@ export function createGameDetailRenderer({
     if (!Number.isFinite(current)) return;
     const prev = lastScores.get(key);
     lastScores.set(key, current);
+    if (document.hidden || !document.hasFocus()) return;
     if (prev === undefined || current <= prev) return;
     scoreEl.classList.remove("score-bump");
     void scoreEl.offsetWidth;
@@ -251,8 +260,12 @@ export function createGameDetailRenderer({
   }
 
   function buildRecentPlayScoreChip(play, homeTeam, awayTeam) {
-    const homeScore = Number(play && play.scoreHome);
-    const awayScore = Number(play && play.scoreAway);
+    if (!play || play.scoreHome == null || play.scoreAway == null ||
+        String(play.scoreHome).trim() === "" || String(play.scoreAway).trim() === "") {
+      return null;
+    }
+    const homeScore = Number(play.scoreHome);
+    const awayScore = Number(play.scoreAway);
     if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) {
       return null;
     }
@@ -303,6 +316,13 @@ export function createGameDetailRenderer({
 
   function renderRecentPlays(recentPlays, homeTeam, awayTeam) {
     if (!lastPlayEl) return;
+    const renderKey = JSON.stringify({
+      recentPlays,
+      home: homeTeam?.tricode,
+      away: awayTeam?.tricode,
+    });
+    if (renderKey === lastRecentPlaysKey) return;
+    lastRecentPlaysKey = renderKey;
     const existingList = lastPlayEl.querySelector(".last-play__list");
     const previousScrollTop = existingList ? existingList.scrollTop : 0;
     const previousScrollHeight = existingList ? existingList.scrollHeight : 0;
@@ -421,12 +441,16 @@ export function createGameDetailRenderer({
     const hasPrev = prevStats && Object.prototype.hasOwnProperty.call(prevStats, statKey);
     if (allowBump && hasPrev && prevStats[statKey] !== normalized) {
       td.classList.add("stat-bump");
+      const clearBump = () => td.classList.remove("stat-bump");
+      td.addEventListener("animationend", clearBump, { once: true });
+      td.addEventListener("animationcancel", clearBump, { once: true });
+      setTimeout(clearBump, 800);
     }
     currentStats[statKey] = normalized;
     return td;
   }
 
-  function buildTable(team, showTotals, hidePoints, targetRows, statsKey) {
+  function buildTable(team, showTotals, targetRows, statsKey) {
     const wrapper = document.createElement("div");
     const table = document.createElement("table");
     table.className = "stats-table";
@@ -599,7 +623,7 @@ export function createGameDetailRenderer({
       totalRow.appendChild(totalLabel);
 
       totalRow.appendChild(cell(""));
-      totalRow.appendChild(cell(hidePoints ? "" : totals.points));
+      totalRow.appendChild(cell(totals.points));
       totalRow.appendChild(cell(totals.rebounds));
       totalRow.appendChild(cell(totals.assists));
       totalRow.appendChild(cell(totals.steals));
@@ -647,7 +671,7 @@ export function createGameDetailRenderer({
       return;
     }
     container.classList.remove("is-hidden");
-    container.appendChild(buildTable(team, showTotals, hidePoints, targetRows, cacheKey));
+    container.appendChild(buildTable(team, showTotals, targetRows, cacheKey));
     tableCache.set(cacheKey, { hash });
   }
 
@@ -965,6 +989,7 @@ export function createGameDetailRenderer({
 
   return {
     clearDataBanner,
+    resetGame,
     isComparisonOpen,
     isPeriodsOpen,
     renderCenter,

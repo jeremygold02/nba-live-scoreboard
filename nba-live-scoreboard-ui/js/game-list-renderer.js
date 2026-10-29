@@ -32,19 +32,21 @@ export function createGameListRenderer({
 }) {
   const gameItemNodes = new Map();
   const gameSectionNodes = new Map();
+  let lastRenderKey = null;
 
-  function buildMetaChip(text, variant = "") {
-    const chip = document.createElement("span");
-    chip.className = variant ? `game-chip game-chip--${variant}` : "game-chip";
-    chip.textContent = text;
-    return chip;
+  function buildMetaText(text, variant) {
+    const element = document.createElement("span");
+    element.className = `game-item__meta-${variant}`;
+    element.textContent = text;
+    return element;
   }
 
   function buildGameMeta(game) {
     const meta = document.createElement("div");
     meta.className = "game-item__meta";
     const statusKey = getGameStatusKey(game);
-    meta.appendChild(buildMetaChip(getGameStatusLabel(game), statusKey));
+    meta.classList.add(`game-item__meta--${statusKey}`);
+    const status = getGameStatusLabel(game);
 
     const clock = formatClock(game.clock);
     const phase = formatLivePhaseText(game, clock);
@@ -52,27 +54,24 @@ export function createGameListRenderer({
     const tipoff = formatTipoff(game.startTimeUTC);
 
     if (statusKey === "live") {
-      if (clock) {
-        meta.appendChild(buildMetaChip(clock));
-      }
-      if (period) {
-        meta.appendChild(buildMetaChip(period));
-      }
-      if (phase) {
-        meta.appendChild(buildMetaChip(phase));
-      }
-    }
-    if (tipoff && statusKey !== "live") {
-      meta.appendChild(buildMetaChip(tipoff, "scheduled"));
+      meta.appendChild(buildMetaText(status, "status"));
+      const liveDetail = [period, clock].filter(Boolean).join(" · ");
+      if (liveDetail) meta.appendChild(buildMetaText(liveDetail, "detail"));
+      if (phase) meta.appendChild(buildMetaText(phase, "detail"));
+    } else {
+      if (tipoff && statusKey === "scheduled") meta.appendChild(buildMetaText(tipoff, "time"));
+      meta.appendChild(buildMetaText(status, "status"));
+      if (tipoff && statusKey !== "scheduled") meta.appendChild(buildMetaText(tipoff, "detail"));
     }
 
     return meta;
   }
 
-  function buildFavoriteButton(tricode) {
+  function buildFavoriteButton(team, side) {
+    const tricode = team.tricode;
     const favButton = document.createElement("button");
     favButton.type = "button";
-    favButton.className = "team-fav";
+    favButton.className = `team-fav team-fav--${side}`;
     const isFavorite = tricode && favoriteTeams.has(tricode);
     if (isFavorite) {
       favButton.classList.add("is-active");
@@ -80,8 +79,11 @@ export function createGameListRenderer({
     if (!tricode) {
       favButton.disabled = true;
     }
-    favButton.setAttribute("aria-label", isFavorite ? "Unfavorite team" : "Favorite team");
-    favButton.title = isFavorite ? "Unfavorite team" : "Favorite team";
+    const teamName = `${team.city || ""} ${team.name || ""}`.trim() || tricode || "team";
+    const label = `${isFavorite ? "Unfavorite" : "Favorite"} ${teamName}`;
+    favButton.setAttribute("aria-label", label);
+    favButton.setAttribute("aria-pressed", Boolean(isFavorite));
+    favButton.title = label;
     favButton.addEventListener("click", (event) => {
       event.stopPropagation();
       toggleFavoriteTeam(tricode);
@@ -106,83 +108,79 @@ export function createGameListRenderer({
       awayTricode: away.tricode || "",
       awayScore: away.score,
       awayId: away.id || "",
+      awayFavorite: favoriteTeams.has(away.tricode),
       homeName: home.name || "",
       homeCity: home.city || "",
       homeTricode: home.tricode || "",
       homeScore: home.score,
       homeId: home.id || "",
+      homeFavorite: favoriteTeams.has(home.tricode),
       favorite: isFavoriteGame(game, favoriteTeams),
       selected: selectedGameId && game.gameId === selectedGameId,
     });
   }
 
   function buildGameListItem(game) {
-    let button = gameItemNodes.get(game.gameId);
-    if (!button) {
-      button = document.createElement("button");
-      button.type = "button";
-      button.className = "game-item";
-      button.addEventListener("click", () => {
-        setSelectedGameId(button.dataset.gameId);
-      });
-      gameItemNodes.set(game.gameId, button);
+    let row = gameItemNodes.get(game.gameId);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "game-item";
+      gameItemNodes.set(game.gameId, row);
     }
 
-    button.dataset.gameId = game.gameId || "";
+    row.dataset.gameId = game.gameId || "";
     const renderHash = getGameListItemHash(game);
-    if (button.dataset.renderHash === renderHash) {
-      return button;
+    if (row.dataset.renderHash === renderHash) {
+      return row;
     }
 
     const selectedGameId = getSelectedGameId();
-    button.dataset.renderHash = renderHash;
-    button.className = "game-item";
+    row.dataset.renderHash = renderHash;
+    row.className = "game-item";
     if (isFavoriteGame(game, favoriteTeams)) {
-      button.classList.add("game-item--favorite");
+      row.classList.add("game-item--favorite");
     }
     if (selectedGameId && game.gameId === selectedGameId) {
-      button.classList.add("is-selected");
+      row.classList.add("is-selected");
     }
 
     const away = game.away || {};
     const home = game.home || {};
-    const title = document.createElement("div");
-    title.className = "game-item__title";
+    const selectButton = document.createElement("button");
+    selectButton.type = "button";
+    selectButton.className = "game-item__select";
+    selectButton.addEventListener("click", () => {
+      setSelectedGameId(row.dataset.gameId);
+    });
 
-    const awayLine = document.createElement("div");
-    awayLine.className = "game-item__teamline";
-    const awayLeft = document.createElement("div");
-    awayLeft.className = "game-item__teamline-left";
-    awayLeft.append(
-      buildFavoriteButton(away.tricode),
-      buildLogoBadge(away),
-      document.createTextNode(`${away.city || ""} ${away.name || ""}`.trim()),
-      document.createTextNode(" @"),
-    );
-    awayLine.appendChild(awayLeft);
+    function buildTeam(team, side) {
+      const teamEl = document.createElement("span");
+      teamEl.className = `game-item__team game-item__team--${side}`;
+      const name = document.createElement("span");
+      name.className = "game-item__team-name";
+      name.textContent = `${team.city || ""} ${team.name || ""}`.trim();
+      teamEl.append(buildLogoBadge(team), name);
+      return teamEl;
+    }
+
     const statusKey = getGameStatusKey(game);
     const showScore = statusKey === "live" || statusKey === "final";
-    if (showScore) {
-      awayLine.appendChild(buildScoreBadge(away.score));
+    function buildRowScore(team, side) {
+      const score = showScore ? buildScoreBadge(team.score) : document.createElement("span");
+      score.classList.add("game-item__score", `game-item__score--${side}`);
+      if (!showScore) score.setAttribute("aria-hidden", "true");
+      return score;
     }
 
-    const homeLine = document.createElement("div");
-    homeLine.className = "game-item__teamline";
-    const homeLeft = document.createElement("div");
-    homeLeft.className = "game-item__teamline-left";
-    homeLeft.append(
-      buildFavoriteButton(home.tricode),
-      buildLogoBadge(home),
-      document.createTextNode(`${home.city || ""} ${home.name || ""}`.trim()),
+    selectButton.append(
+      buildTeam(away, "away"),
+      buildRowScore(away, "away"),
+      buildGameMeta(game),
+      buildRowScore(home, "home"),
+      buildTeam(home, "home"),
     );
-    homeLine.appendChild(homeLeft);
-    if (showScore) {
-      homeLine.appendChild(buildScoreBadge(home.score));
-    }
-
-    title.append(awayLine, homeLine);
-    button.replaceChildren(title, buildGameMeta(game));
-    return button;
+    row.replaceChildren(buildFavoriteButton(away, "away"), selectButton, buildFavoriteButton(home, "home"));
+    return row;
   }
 
   function buildGameListSection(sectionKey, titleText, games) {
@@ -253,6 +251,35 @@ export function createGameListRenderer({
     if (!gamesEl) return;
 
     const allGames = games || [];
+    const renderKey = JSON.stringify({
+      games: allGames,
+      selectedGameId: getSelectedGameId(),
+      filter: getGameFilter(),
+      search: getGameSearchQuery(),
+      sort: getGameSort(),
+      favorites: [...favoriteTeams].sort(),
+      emptyMessage: getEmptyGameListMessage(allGames.length > 0, getGameSearchQuery(), getGameFilter()),
+    });
+    if (renderKey === lastRenderKey) return;
+    lastRenderKey = renderKey;
+    const activeGameIds = new Set(allGames.map((game) => game.gameId));
+    for (const gameId of gameItemNodes.keys()) {
+      if (!activeGameIds.has(gameId)) gameItemNodes.delete(gameId);
+    }
+
+    const active = document.activeElement;
+    const activeRow = active && gamesEl.contains(active) ? active.closest(".game-item") : null;
+    const focusedGameId = activeRow?.dataset.gameId;
+    const focusedControl = active?.classList.contains("team-fav--away") ? ".team-fav--away"
+      : active?.classList.contains("team-fav--home") ? ".team-fav--home"
+        : active?.classList.contains("game-item__select") ? ".game-item__select" : null;
+    const restoreFocus = () => {
+      if (!focusedGameId || !focusedControl) return;
+      const row = [...gamesEl.querySelectorAll(".game-item")].find((item) => item.dataset.gameId === focusedGameId);
+      const target = row?.querySelector(focusedControl) || gameFiltersEl?.querySelector(".is-active");
+      target?.focus({ preventScroll: true });
+    };
+
     const selectedLabel = syncSelectedLabels(allGames);
     const gameFilter = getGameFilter();
     const gameSearchQuery = getGameSearchQuery();
@@ -281,6 +308,7 @@ export function createGameListRenderer({
           selectedGameViewEl.textContent = selectedLabel;
         }
       }
+      restoreFocus();
       return;
     }
 
@@ -308,6 +336,7 @@ export function createGameListRenderer({
     });
 
     gamesEl.replaceChildren(...sections);
+    restoreFocus();
     if (selectedGameEl) {
       selectedGameEl.textContent = selectedLabel;
     }

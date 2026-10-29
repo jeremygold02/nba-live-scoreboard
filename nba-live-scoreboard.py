@@ -1,19 +1,21 @@
 import json
 import logging
+import math
+import os
 import re
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from http.server import SimpleHTTPRequestHandler
+from email.utils import parsedate_to_datetime
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
-from socketserver import TCPServer
 
 import webview
 import requests
 from requests import exceptions as requests_exceptions
-from nba_api.stats.endpoints import scoreboardv2
+from nba_api.stats.static import teams
 
 REFRESH_SECONDS = 10
 LIVE_REQUEST_TIMEOUT_SECONDS = 15
@@ -36,7 +38,21 @@ MAX_BACKOFF_SECONDS = 60
 PBP_BACKOFF = {}
 PBP_CACHE = {}
 GAME_PAGE_CACHE = {}
+GAME_PAGE_LOCKS = {}
+GAME_PAGE_CACHE_LOCK = threading.Lock()
+SCHEDULE_STATUS_CACHE = {}
+SCHEDULE_STATUS_PENDING = set()
+SCHEDULE_STATUS_LOCK = threading.Lock()
+SCHEDULE_STATUS_RECHECK_SECONDS = 30
+SCHEDULE_STATUS_MAX_PENDING = 3
 REQUEST_HEALTH = {}
+RATE_LIMITS = {}
+RATE_LIMITS_LOCK = threading.Lock()
+SCOREBOARD_CACHE = {}
+SCOREBOARD_CACHE_LOCK = threading.Lock()
+SCOREBOARD_REQUEST_LOCKS = {}
+SCOREBOARD_CACHE_SECONDS = 2
+TEAM_CITIES = {team["id"]: (team["abbreviation"], team["city"]) for team in teams.get_teams()}
 FAVORITES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "favorites.json"
 UI_PREFERENCES_PATH = Path(__file__).resolve().parent / "nba-live-scoreboard-ui" / "resources" / "ui-preferences.json"
 LIVE_DATA_BASE_URL = "https://cdn.nba.com/static/json/liveData"
@@ -135,8 +151,12 @@ def _is_transient_request_error(exc):
 
 
 def _friendly_request_error(context, exc):
+    if isinstance(exc, RateLimitError):
+        return f"The NBA data source is temporarily rate-limiting {context}. The app will retry after the cooldown."
     if _is_transient_request_error(exc):
         return f"The NBA live data connection dropped while loading {context}. The app will retry automatically."
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return f"The NBA data source returned an invalid response while loading {context}. Please try again."
     text = str(exc).strip()
     if text:
         return text
@@ -213,6 +233,7 @@ def _scoreboard_polling_state(status, has_live_games, is_today=True):
             SCOREBOARD_MAX_POLL_MS,
             ("scoreboard",),
         )
+        refresh_ms = max(refresh_ms, _rate_limit_remaining_ms())
         return _build_polling_state(refresh_ms, "error", "scoreboard_error")
 
     if not is_today:
@@ -242,6 +263,7 @@ def _detail_polling_state(status, game=None, data_status=None):
             DETAIL_MAX_POLL_MS,
             ("scoreboard", "boxscore", "playbyplay"),
         )
+        refresh_ms = max(refresh_ms, _rate_limit_remaining_ms())
         return _build_polling_state(refresh_ms, "error", "detail_error")
 
     if game_status_key != "live":
@@ -274,6 +296,9 @@ def _detail_polling_state(status, game=None, data_status=None):
             _backoff_remaining_ms(_get_backoff(game_id, BOX_BACKOFF)),
             _backoff_remaining_ms(_get_backoff(game_id, PBP_BACKOFF)),
         )
+
+    if data_level in ("stale", "partial", "pending"):
+        refresh_ms = max(refresh_ms, _rate_limit_remaining_ms())
 
     return _build_polling_state(refresh_ms, mode)
 
@@ -322,15 +347,49 @@ def _fetch_live_data(context, factory, request_key=None):
     raise last_exc
 
 
+class RateLimitError(requests_exceptions.RequestException):
+    pass
+
+
+def _rate_limit_remaining_ms():
+    with RATE_LIMITS_LOCK:
+        remaining = max(RATE_LIMITS.values(), default=0) - time.monotonic()
+    return max(0, int(remaining * 1000))
+
+
+def _retry_after_seconds(value):
+    try:
+        delay = float(value)
+        return max(0.0, delay) if math.isfinite(delay) else 60.0
+    except (TypeError, ValueError):
+        try:
+            when = parsedate_to_datetime(str(value))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return 60.0
+
+
+def _request_with_rate_limit(url, headers, params=None):
+    origin = urlparse(url).netloc.lower()
+    with RATE_LIMITS_LOCK:
+        remaining = RATE_LIMITS.get(origin, 0) - time.monotonic()
+    if remaining > 0:
+        raise RateLimitError(f"Rate limit cooldown active for {origin} ({remaining:.0f}s remaining)")
+    response = requests.get(url, headers=headers, params=params, timeout=LIVE_REQUEST_TIMEOUT_SECONDS)
+    if response.status_code == 429:
+        delay = max(1.0, _retry_after_seconds(response.headers.get("Retry-After")))
+        with RATE_LIMITS_LOCK:
+            RATE_LIMITS[origin] = max(RATE_LIMITS.get(origin, 0), time.monotonic() + delay)
+        raise RateLimitError(f"Rate limited by {origin}; retry after {delay:.0f}s", response=response)
+    response.raise_for_status()
+    return response
+
+
 def _fetch_json(url, context, headers, request_key=None, params=None):
     def _request():
-        response = requests.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
+        response = _request_with_rate_limit(url, headers, params=params)
         payload = str(response.text or "").lstrip("\ufeff").strip()
         if not payload:
             raise ValueError(f"Empty response from {url}")
@@ -361,6 +420,8 @@ def _fetch_live_json(endpoint, context, request_key=None, fallback=None):
             FIREFOX_NBA_LIVE_HEADERS,
             request_key=request_key,
         )
+    except RateLimitError:
+        raise
     except Exception as exc:
         if fallback is None:
             raise
@@ -393,18 +454,80 @@ class _GamePageParser(HTMLParser):
             self.parts.append(data)
 
 
+def _fetch_games_page_scoreboard(scoreboard_date):
+    response = _request_with_rate_limit(
+        "https://www.nba.com/games", FIREFOX_NBA_LIVE_HEADERS, params={"date": scoreboard_date}
+    )
+    parser = _GamePageParser()
+    parser.feed(response.text)
+    parser.close()
+    if not parser.parts:
+        raise ValueError("NBA games page did not include scoreboard data.")
+    page = json.loads("".join(parser.parts))
+    props = (page.get("props") or {}).get("pageProps") or {}
+    if props.get("hasError") or props.get("selectedDate") != scoreboard_date:
+        raise ValueError("NBA games page did not return the requested date.")
+    feed = props.get("gameCardFeed")
+    if not isinstance(feed, dict) or not isinstance(feed.get("modules"), list):
+        raise ValueError("NBA games page did not include a valid game list.")
+
+    games = []
+    for module in feed["modules"]:
+        if not isinstance(module, dict) or not isinstance(module.get("cards"), list):
+            raise ValueError("NBA games page returned an invalid game list.")
+        for card in module["cards"]:
+            if not isinstance(card, dict) or card.get("cardType") != "game":
+                continue
+            game = card.get("cardData")
+            if not isinstance(game, dict) or not game.get("gameId"):
+                raise ValueError("NBA games page returned an invalid game.")
+            normalized = dict(game)
+            normalized["gameTimeUTC"] = game.get("gameTimeUtc") or game.get("gameTimeUTC") or ""
+            for side in ("homeTeam", "awayTeam"):
+                team = game.get(side)
+                if not isinstance(team, dict) or not team.get("teamId"):
+                    raise ValueError("NBA games page returned an invalid team.")
+                normalized[side] = dict(team)
+                abbreviation, city = TEAM_CITIES.get(_coerce_int(team.get("teamId")), ("", ""))
+                normalized[side]["teamCity"] = team.get("teamCity") or (
+                    city if team.get("teamTricode") == abbreviation else ""
+                )
+            games.append(normalized)
+    return {"scoreboard": {"games": games}}
+
+
+def _fetch_dated_scoreboard(scoreboard_date):
+    context = f"the scoreboard for {scoreboard_date}"
+    try:
+        return _fetch_live_data(
+            context, lambda: _fetch_games_page_scoreboard(scoreboard_date), request_key="scoreboard"
+        )
+    except RateLimitError:
+        raise
+    except Exception as exc:
+        LOG.warning("NBA games page unavailable for %s: %s; trying the stats feed", scoreboard_date, exc)
+        return _fetch_stats_json(
+            "scoreboardv3", context, {"GameDate": scoreboard_date, "LeagueID": "00"},
+            request_key="scoreboard",
+        )
+
+
+def _scoreboard_games(board):
+    scoreboard = board.get("scoreboard") if isinstance(board, dict) else None
+    if not isinstance(scoreboard, dict) or not isinstance(scoreboard.get("games"), list):
+        raise ValueError("NBA scoreboard response did not include a valid game list.")
+    return scoreboard["games"]
+
+
 def _fetch_game_page(game_id):
-    cached = GAME_PAGE_CACHE.get(game_id)
-    if cached and time.monotonic() - cached["fetched"] < 15:
-        return cached["payload"]
+    with GAME_PAGE_CACHE_LOCK:
+        game_lock = GAME_PAGE_LOCKS.setdefault(game_id, threading.Lock())
 
     def _request():
-        response = requests.get(
+        response = _request_with_rate_limit(
             f"https://www.nba.com/game/{game_id}/box-score",
-            headers=FIREFOX_NBA_LIVE_HEADERS,
-            timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
+            FIREFOX_NBA_LIVE_HEADERS,
         )
-        response.raise_for_status()
         parser = _GamePageParser()
         parser.feed(response.text)
         parser.close()
@@ -417,24 +540,32 @@ def _fetch_game_page(game_id):
             raise ValueError("NBA game page returned data for a different game.")
         return {"game": game, "playByPlay": props.get("playByPlay")}
 
-    payload = _fetch_live_data("the NBA game page", _request)
-    GAME_PAGE_CACHE[game_id] = {"fetched": time.monotonic(), "payload": payload}
-    return payload
+    with game_lock:
+        cached = GAME_PAGE_CACHE.get(game_id)
+        if cached and time.monotonic() - cached["fetched"] < 15:
+            return cached["payload"]
+        payload = _fetch_live_data("the NBA game page", _request)
+        GAME_PAGE_CACHE[game_id] = {"fetched": time.monotonic(), "payload": payload}
+        return payload
 
 
-def _reconcile_scheduled_game(game, scoreboard_date, is_today):
+def _scheduled_game_is_due(game, is_today):
     if not game or not is_today or game.get("gameStatus") != 1:
-        return game
+        return False
 
     try:
         tipoff = datetime.fromisoformat(
             str(game.get("gameTimeUTC") or "").replace("Z", "+00:00")
         )
     except ValueError:
-        return game
+        return False
     if tipoff.tzinfo is None:
         tipoff = tipoff.replace(tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) < tipoff.astimezone(timezone.utc):
+    return datetime.now(timezone.utc) >= tipoff.astimezone(timezone.utc)
+
+
+def _reconcile_scheduled_game(game, scoreboard_date, is_today):
+    if not _scheduled_game_is_due(game, is_today):
         return game
 
     game_id = game.get("gameId")
@@ -467,6 +598,88 @@ def _reconcile_scheduled_game(game, scoreboard_date, is_today):
     return reconciled
 
 
+def _refresh_scheduled_game(game, scoreboard_date, is_today):
+    game_id = game["gameId"]
+    reconciled = None
+    try:
+        result = _reconcile_scheduled_game(game, scoreboard_date, is_today)
+        if result.get("gameStatus") in (2, 3):
+            reconciled = {
+                key: result[key]
+                for key in ("gameStatus", "gameStatusText", "period", "gameClock", "gameTimeUTC")
+                if key in result
+            }
+            for side in ("homeTeam", "awayTeam"):
+                team = result.get(side) or {}
+                reconciled[side] = {
+                    key: team[key]
+                    for key in ("score", "timeoutsRemaining", "inBonus")
+                    if key in team
+                }
+    except Exception:
+        LOG.exception("scheduled game status check failed for %s", game_id)
+    finally:
+        with SCHEDULE_STATUS_LOCK:
+            previous = SCHEDULE_STATUS_CACHE.get(game_id) or {}
+            SCHEDULE_STATUS_CACHE[game_id] = {
+                "checked": time.monotonic(),
+                "game": reconciled or previous.get("game"),
+            }
+            SCHEDULE_STATUS_PENDING.discard(game_id)
+
+
+def _reconcile_scoreboard_games(games, scoreboard_date, is_today):
+    reconciled_games = []
+    for game in games:
+        game_id = game.get("gameId")
+        if not game_id or not _scheduled_game_is_due(game, is_today):
+            reconciled_games.append(game)
+            continue
+        with SCHEDULE_STATUS_LOCK:
+            cached = SCHEDULE_STATUS_CACHE.get(game_id)
+            resolved = cached.get("game") if cached else None
+            due = not cached or time.monotonic() - cached["checked"] >= SCHEDULE_STATUS_RECHECK_SECONDS
+            check = (
+                due
+                and game_id not in SCHEDULE_STATUS_PENDING
+                and len(SCHEDULE_STATUS_PENDING) < SCHEDULE_STATUS_MAX_PENDING
+            )
+            if check:
+                SCHEDULE_STATUS_PENDING.add(game_id)
+        if resolved:
+            merged = {**game, **resolved}
+            for side in ("homeTeam", "awayTeam"):
+                merged[side] = {**(game.get(side) or {}), **(resolved.get(side) or {})}
+            reconciled_games.append(merged)
+        else:
+            reconciled_games.append(game)
+        if check:
+            threading.Thread(
+                target=_refresh_scheduled_game,
+                args=(game, scoreboard_date, is_today),
+                daemon=True,
+            ).start()
+    return reconciled_games
+
+
+def _configure_webview_background_updates():
+    key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
+    existing = os.environ.get(key, "")
+    flags = (
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+    )
+    missing = [flag for flag in flags if flag not in existing.split()]
+    os.environ[key] = " ".join([existing, *missing]).strip()
+
+
+def _notify_window_focus(window, focused):
+    if window.events.loaded.is_set():
+        event = "focus" if focused else "blur"
+        window.evaluate_js(f"window.dispatchEvent(new Event('{event}'));")
+
+
 def _fetch_game_page_playbyplay(game_id):
     playbyplay = _fetch_game_page(game_id).get("playByPlay") or {}
     if playbyplay.get("gameId") != game_id:
@@ -475,7 +688,8 @@ def _fetch_game_page_playbyplay(game_id):
 
 
 def _get_backoff(game_id, backoff_map=None):
-    backoff_map = backoff_map or BOX_BACKOFF
+    if backoff_map is None:
+        backoff_map = BOX_BACKOFF
     entry = backoff_map.get(game_id)
     if not entry:
         return None
@@ -485,7 +699,8 @@ def _get_backoff(game_id, backoff_map=None):
 
 
 def _set_backoff(game_id, backoff_map=None):
-    backoff_map = backoff_map or BOX_BACKOFF
+    if backoff_map is None:
+        backoff_map = BOX_BACKOFF
     current = backoff_map.get(game_id)
     delay = current["delay"] if current else 1
     delay = min(delay * 2, MAX_BACKOFF_SECONDS)
@@ -496,7 +711,8 @@ def _set_backoff(game_id, backoff_map=None):
 
 
 def _clear_backoff(game_id, backoff_map=None):
-    backoff_map = backoff_map or BOX_BACKOFF
+    if backoff_map is None:
+        backoff_map = BOX_BACKOFF
     if game_id in backoff_map:
         del backoff_map[game_id]
 
@@ -696,7 +912,8 @@ def _normalize_shot_text(text):
     value = re.sub(r"\bpullup\b", "pull-up", value, flags=re.IGNORECASE)
     value = re.sub(r"\bfinger roll\b", "finger-roll", value, flags=re.IGNORECASE)
     value = re.sub(r"\bJump Shot\b", "jumper", value, flags=re.IGNORECASE)
-    value = re.sub(r"\bLayup\b", "layup", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bLayup(?:\s+Shot)?\b", "layup", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b(?:Driving|Floating|Running|Cutting|Tip)\b", lambda match: match.group(0).lower(), value)
     value = re.sub(r"\bDUNK\b", "dunk", value, flags=re.IGNORECASE)
     value = re.sub(r"\bDunk\b", "dunk", value, flags=re.IGNORECASE)
     value = re.sub(r"\bfadeaway Shot\b", "fadeaway jumper", value, flags=re.IGNORECASE)
@@ -704,7 +921,6 @@ def _normalize_shot_text(text):
     value = re.sub(r"\bstep-back Shot\b", "step-back jumper", value, flags=re.IGNORECASE)
     value = re.sub(r"\bShot\b", "jumper", value, flags=re.IGNORECASE)
     value = re.sub(r"\bthree-pointer jumper\b", "three-pointer", value, flags=re.IGNORECASE)
-    value = re.sub(r"\(([^()]+?)\s+\d+\s+AST\)", r"(\1 assists)", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+\(", " (", value)
     return _normalize_inline_play_stats(value)
 
@@ -810,11 +1026,16 @@ def _format_recent_play_description(action, home=None, away=None):
         shot_text = _normalize_shot_text(description)
         return _replace_player_prefix(shot_text, player_label, f"{player_label} makes".strip())
 
-    if action_type == "rebound" and sub_type in {"offensive", "defensive"}:
+    if action_type == "rebound":
         totals_text = _format_rebound_totals(description)
+        if sub_type not in {"offensive", "defensive"} and totals_text:
+            counts = re.search(r"\(Off:(\d+)\s+Def:(\d+)\)", description)
+            if counts:
+                totals_text = f"{totals_text[:-1]}; {counts.group(1)} offensive, {counts.group(2)} defensive)"
         subject = player_label or team_display_name or team_tricode
         if subject:
-            base = f"{subject} {sub_type} rebound"
+            rebound_type = f"{sub_type} " if sub_type in {"offensive", "defensive"} else ""
+            base = f"{subject} {rebound_type}rebound"
             return f"{base} {totals_text}".strip()
 
     if action_type == "foul":
@@ -1223,7 +1444,7 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
         }
 
     backoff = _get_backoff(game_id, PBP_BACKOFF)
-    if backoff and (cached.get("onCourt") or cached.get("recentPlays")):
+    if backoff:
         return _cached_playbyplay(
             "Using cached on-court lineups during play-by-play backoff.",
             "Showing cached recent plays during play-by-play backoff.",
@@ -1245,22 +1466,43 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
             "Showing cached recent plays because play-by-play is unavailable.",
         )
 
-    actions = (payload.get("game") or {}).get("actions") or []
-    if actions:
-        # The live feed can append corrections with newer action numbers even when the
-        # play itself happened earlier, so orderNumber is the safer chronological key.
-        actions = sorted(
-            actions,
-            key=lambda item: (
-                _coerce_int(item.get("orderNumber")) or 0,
-                _coerce_int(item.get("actionNumber")) or 0,
-            ),
-        )
+    game_payload = payload.get("game") or {}
+    actions = game_payload.get("actions") or []
+    page_feed = game_payload.get("source") == "hanaV3"
+    if page_feed:
+        # The game page uses a different action vocabulary and leaves scores empty
+        # between scoring plays. Its actionId order is already chronological.
+        normalized_actions = []
+        scores = {"scoreHome": None, "scoreAway": None}
+        for action in actions:
+            action = dict(action)
+            action_type = str(action.get("actionType") or "").strip().lower()
+            if action_type in {"made shot", "missed shot"}:
+                action["actionType"] = "3pt" if "3PT" in (action.get("description") or "").upper() else "2pt"
+            elif action_type in {"free throw", "jump ball", "instant replay"}:
+                action["actionType"] = action_type.replace(" ", "")
+            if action.get("playerName"):
+                action["playerNameI"] = action["playerName"]
+            for field in scores:
+                value = _coerce_int(action.get(field))
+                if value is not None:
+                    scores[field] = value
+                action[field] = scores[field]
+            normalized_actions.append(action)
+        actions = normalized_actions
+    elif actions and all(_coerce_int(item.get("orderNumber")) is not None for item in actions):
+        # Live feed corrections may arrive out of order; orderNumber reflects when
+        # the play happened. Never sort a feed that lacks this field.
+        actions = sorted(actions, key=lambda item: _coerce_int(item.get("orderNumber")))
 
-    recent_plays = _merge_recent_plays(
-        _combine_adjacent_recent_plays(_extract_recent_plays(actions, home, away)),
-        cached.get("recentPlays"),
-    )
+    extracted_plays = _combine_adjacent_recent_plays(_extract_recent_plays(actions, home, away))
+    if page_feed:
+        # Page action numbers repeat for distinct events, so they cannot identify
+        # rows for the live-feed cache's deduplication.
+        recent_plays = extracted_plays
+    else:
+        previous_plays = cached.get("recentPlays") if not cached.get("pageFeed") else None
+        recent_plays = _merge_recent_plays(extracted_plays, previous_plays)
 
     if can_build_on_court and actions:
         home_id = home.get("id")
@@ -1289,6 +1531,7 @@ def _build_playbyplay_state(game_id, home, away, include_on_court=False):
                 target.discard(person_id)
 
     cache_entry = dict(cached)
+    cache_entry["pageFeed"] = page_feed
     if can_build_on_court and (home_on or away_on):
         cache_entry["onCourt"] = {"home": sorted(home_on), "away": sorted(away_on)}
     if recent_plays:
@@ -1389,105 +1632,6 @@ def _team_from_scoreboard(team):
         "timeoutsRemaining": team.get("timeoutsRemaining"),
         "inBonus": team.get("inBonus"),
     }
-
-
-def _parse_record(record_text):
-    text = str(record_text or "").strip()
-    match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", text)
-    if not match:
-        return 0, 0
-    return int(match.group(1)), int(match.group(2))
-
-
-def _stats_tipoff_to_utc(game_date, status_text):
-    text = str(status_text or "").strip()
-    match = re.search(r"(\d{1,2}:\d{2})\s*([AP]M)", text, re.IGNORECASE)
-    if not match:
-        return ""
-    try:
-        local_time = datetime.strptime(
-            f"{game_date} {match.group(1)} {match.group(2).upper()}",
-            "%Y-%m-%d %I:%M %p",
-        )
-    except ValueError:
-        return ""
-    local_zone = datetime.now().astimezone().tzinfo
-    return local_time.replace(tzinfo=local_zone).astimezone(timezone.utc).isoformat()
-
-
-def _clock_from_stats_scoreboard(header):
-    live_pc_time = str(header.get("LIVE_PC_TIME") or "").strip()
-    if live_pc_time:
-        return live_pc_time
-    live_bcast = str(header.get("LIVE_PERIOD_TIME_BCAST") or "").strip()
-    match = re.search(r"(\d{1,2}:\d{2})", live_bcast)
-    if match:
-        return match.group(1)
-    return ""
-
-
-def _team_from_stats_line(line):
-    wins, losses = _parse_record(line.get("TEAM_WINS_LOSSES"))
-    return {
-        "teamId": line.get("TEAM_ID"),
-        "teamCity": line.get("TEAM_CITY_NAME") or "",
-        "teamName": line.get("TEAM_NAME") or "",
-        "teamTricode": line.get("TEAM_ABBREVIATION") or "",
-        "score": _coerce_int(line.get("PTS")) or 0,
-        "wins": wins,
-        "losses": losses,
-        "timeoutsRemaining": None,
-        "inBonus": None,
-    }
-
-
-def _game_from_stats_scoreboard(header, line_scores, game_date):
-    home_team_id = header.get("HOME_TEAM_ID")
-    away_team_id = header.get("VISITOR_TEAM_ID")
-    teams_by_id = {
-        line.get("TEAM_ID"): line
-        for line in line_scores
-        if line.get("TEAM_ID") is not None
-    }
-    home_line = teams_by_id.get(home_team_id)
-    away_line = teams_by_id.get(away_team_id)
-    if not home_line or not away_line:
-        return None
-
-    status_text = header.get("GAME_STATUS_TEXT") or ""
-    start_time_utc = _stats_tipoff_to_utc(game_date, status_text)
-    return {
-        "gameId": header.get("GAME_ID"),
-        "gameStatus": _coerce_int(header.get("GAME_STATUS_ID")),
-        "gameStatusText": status_text,
-        "period": _coerce_int(header.get("LIVE_PERIOD")) or 0,
-        "gameClock": _clock_from_stats_scoreboard(header),
-        "gameTimeUTC": start_time_utc,
-        "arenaName": header.get("ARENA_NAME") or "",
-        "arenaCity": "",
-        "arenaState": "",
-        "homeTeam": _team_from_stats_line(home_line),
-        "awayTeam": _team_from_stats_line(away_line),
-    }
-
-
-def _rows_from_stats_dataset(dataset):
-    payload = dataset.get_dict() if hasattr(dataset, "get_dict") else dataset
-    if not isinstance(payload, dict):
-        return []
-    headers = payload.get("headers") or []
-    data = payload.get("data") or []
-    if not headers or not data:
-        return []
-    rows = []
-    for row in data:
-        if not isinstance(row, list):
-            continue
-        rows.append({
-            headers[index]: row[index] if index < len(row) else None
-            for index in range(len(headers))
-        })
-    return rows
 
 
 def _team_from_boxscore(box_team, fallback, period_count):
@@ -1730,7 +1874,7 @@ def _has_favorite_team(game, favorite_tricodes):
     return home in favorite_tricodes or away in favorite_tricodes
 
 
-def _load_scoreboard_snapshot(scoreboard_date=None):
+def _load_uncached_scoreboard_snapshot(scoreboard_date=None):
     scoreboard_date = _normalize_scoreboard_date(scoreboard_date)
     is_today = _is_today_scoreboard_date(scoreboard_date)
     updated = _now_utc_iso()
@@ -1741,54 +1885,47 @@ def _load_scoreboard_snapshot(scoreboard_date=None):
                 "scoreboard/todaysScoreboard_00.json",
                 "today's scoreboard",
                 request_key="scoreboard",
-                fallback=lambda: _fetch_stats_json(
-                    "scoreboardv3",
-                    "today's scoreboard",
-                    {"GameDate": scoreboard_date, "LeagueID": "00"},
-                ),
+                fallback=lambda: _fetch_dated_scoreboard(scoreboard_date),
             )
-            games = (board.get("scoreboard") or {}).get("games") or []
+            games = _scoreboard_games(board)
         else:
-            board = _fetch_live_data(
-                f"the scoreboard for {scoreboard_date}",
-                lambda: scoreboardv2.ScoreboardV2(
-                    day_offset=0,
-                    game_date=scoreboard_date,
-                    headers=FIREFOX_NBA_STATS_HEADERS,
-                    timeout=LIVE_REQUEST_TIMEOUT_SECONDS,
-                ),
-                request_key="scoreboard",
-            )
-            headers = _rows_from_stats_dataset(board.game_header)
-            lines = _rows_from_stats_dataset(board.line_score)
-            lines_by_game = {}
-            for line in lines:
-                game_id = line.get("GAME_ID")
-                if not game_id:
-                    continue
-                lines_by_game.setdefault(game_id, []).append(line)
-            games = []
-            seen_game_ids = set()
-            for header in headers:
-                game_id = header.get("GAME_ID")
-                if not game_id or game_id in seen_game_ids:
-                    continue
-                seen_game_ids.add(game_id)
-                normalized = _game_from_stats_scoreboard(
-                    header,
-                    lines_by_game.get(game_id, []),
-                    scoreboard_date,
-                )
-                if normalized:
-                    games.append(normalized)
+            board = _fetch_dated_scoreboard(scoreboard_date)
+            games = _scoreboard_games(board)
         LOG.info("scoreboard returned %s games", len(games))
     except Exception as exc:
         LOG.exception("scoreboard error")
         context = "today's scoreboard" if is_today else f"the scoreboard for {scoreboard_date}"
         return updated, None, [], _friendly_request_error(context, exc), scoreboard_date, is_today
 
-    summaries = [_summarize_game(g) for g in games]
-    return updated, games, summaries, None, scoreboard_date, is_today
+    return updated, games, [], None, scoreboard_date, is_today
+
+
+def _load_scoreboard_snapshot(scoreboard_date=None):
+    scoreboard_date = _normalize_scoreboard_date(scoreboard_date)
+    key = (scoreboard_date, _is_today_scoreboard_date(scoreboard_date))
+    with SCOREBOARD_CACHE_LOCK:
+        request_lock = SCOREBOARD_REQUEST_LOCKS.setdefault(key, threading.Lock())
+    with request_lock:
+        with SCOREBOARD_CACHE_LOCK:
+            cached = SCOREBOARD_CACHE.get(key)
+            if cached and time.monotonic() - cached["fetched"] < SCOREBOARD_CACHE_SECONDS:
+                snapshot = cached["snapshot"]
+            else:
+                snapshot = None
+        if snapshot is None:
+            snapshot = _load_uncached_scoreboard_snapshot(scoreboard_date)
+            if snapshot[1] is not None:
+                with SCOREBOARD_CACHE_LOCK:
+                    SCOREBOARD_CACHE[key] = {"fetched": time.monotonic(), "snapshot": snapshot}
+                    if len(SCOREBOARD_CACHE) > 16:
+                        oldest = min(SCOREBOARD_CACHE, key=lambda entry: SCOREBOARD_CACHE[entry]["fetched"])
+                        del SCOREBOARD_CACHE[oldest]
+    updated, games, _, error, scoreboard_date, is_today = snapshot
+    if games is None:
+        return snapshot
+    games = _reconcile_scoreboard_games(games, scoreboard_date, is_today)
+    summaries = [_summarize_game(game) for game in games]
+    return updated, games, summaries, error, scoreboard_date, is_today
 
 
 def build_scoreboard_state(scoreboard_date=None, selected_game_id=None):
@@ -1928,6 +2065,30 @@ def build_state(game_id=None, scoreboard_date=None):
 
     cache = BOX_CACHE.get(base_game["gameId"])
     backoff = _get_backoff(base_game["gameId"])
+    if backoff and not cache:
+        home = {**home_fallback, "stats": {}, "players": []}
+        away = {**away_fallback, "stats": {}, "players": []}
+        playbyplay_state = _build_playbyplay_state(
+            base_game["gameId"], home, away, include_on_court=game_status == 2
+        )
+        return _apply_detail_polling({
+            "status": "live_no_data" if game_status == 2 else "postgame",
+            "updated": updated,
+            "dataUpdated": updated,
+            "dataStatus": _build_data_status(
+                "pending", "Box score temporarily unavailable",
+                "The app will retry the box score after the current backoff.", updated,
+            ),
+            "game": base_game,
+            "games": summaries,
+            "recentPlays": _serialize_recent_plays(playbyplay_state.get("recentPlays")),
+            "periods": [],
+            "home": home,
+            "away": away,
+            "error": "The box score is temporarily unavailable.",
+            "scoreboardDate": scoreboard_date,
+            "isToday": is_today,
+        })
     if backoff and cache:
         LOG.info("backoff active for %s; using cached boxscore", base_game["gameId"])
         home = cache.get("home", {**home_fallback, "stats": {}, "players": []})
@@ -2093,6 +2254,10 @@ def build_state(game_id=None, scoreboard_date=None):
         "scoreboardDate": scoreboard_date,
         "isToday": is_today,
     })
+
+
+class ScoreboardHTTPServer(ThreadingHTTPServer):
+    request_queue_size = 32
 
 
 class RaptorsLiveAPI:
@@ -2305,13 +2470,14 @@ if __name__ == "__main__":
         def log_message(self, format, *args):
             LOG.info("http %s", format % args)
 
-    server = TCPServer(("127.0.0.1", 0), Handler)
+    server = ScoreboardHTTPServer(("127.0.0.1", 0), Handler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     LOG.info("local server running on http://127.0.0.1:%s", port)
 
     LOG.info("starting webview")
+    _configure_webview_background_updates()
     window = webview.create_window(
         "NBA Live Scoreboard",
         url=f"http://127.0.0.1:{port}/index.html",
@@ -2320,4 +2486,7 @@ if __name__ == "__main__":
         maximized=True,
         js_api=api,
     )
+    window.events.minimized += lambda: _notify_window_focus(window, False)
+    window.events.restored += lambda: _notify_window_focus(window, True)
+    window.events.maximized += lambda: _notify_window_focus(window, True)
     webview.start()
