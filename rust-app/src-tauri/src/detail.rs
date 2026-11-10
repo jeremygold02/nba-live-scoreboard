@@ -844,7 +844,12 @@ mod tests {
         let scoreboard = ScoreboardService::with_test_server(&server.base);
         let detail = DetailService::new();
         let fresh = detail.state(&scoreboard, None, Some(game_id));
-        assert_eq!(fresh["status"], "ok");
+        assert_eq!(
+            fresh["status"],
+            "ok",
+            "state: {fresh}; requests: {:?}",
+            server.paths()
+        );
         assert_eq!(fresh["home"]["players"][0]["points"], 12);
 
         fail_box.store(true, Ordering::Relaxed);
@@ -854,7 +859,11 @@ mod tests {
         assert_eq!(stale["home"]["players"][0]["points"], 12);
         assert_eq!(stale["polling"]["refreshMs"], 36_000);
         assert_eq!(detail.health.lock().unwrap().box_score.failure_streak, 2);
-        assert!(server.paths().iter().any(|path| path.starts_with("/game/")));
+        let paths = server.paths();
+        assert!(
+            paths.iter().any(|path| path.starts_with("/game/")),
+            "requests: {paths:?}"
+        );
 
         let during_backoff = detail.state(&scoreboard, None, Some(game_id));
         assert_eq!(during_backoff["dataStatus"]["level"], "stale");
@@ -873,7 +882,11 @@ mod tests {
         fail_box.store(false, Ordering::Relaxed);
         let recovered = detail.state(&scoreboard, None, Some(game_id));
         assert_eq!(recovered["status"], "ok");
-        assert!(recovered["dataStatus"].is_null());
+        assert!(
+            recovered["dataStatus"].is_null(),
+            "state: {recovered}; requests: {:?}",
+            server.paths()
+        );
         assert_eq!(detail.health.lock().unwrap().box_score.failure_streak, 0);
     }
 

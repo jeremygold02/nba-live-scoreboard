@@ -200,7 +200,10 @@ impl ScoreboardService {
                 Ok(response) => response,
                 Err(error)
                     if attempt < 2
-                        && (error.is_timeout() || error.is_connect() || error.is_body()) =>
+                        && (error.is_timeout()
+                            || error.is_connect()
+                            || error.is_body()
+                            || error.is_request()) =>
                 {
                     std::thread::sleep(Duration::from_millis(500 * (attempt + 1)));
                     continue;
@@ -907,11 +910,21 @@ pub(crate) mod test_support {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
                             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                            let mut request = [0_u8; 4096];
-                            let Ok(read) = stream.read(&mut request) else {
+                            let mut request = Vec::new();
+                            let mut buffer = [0_u8; 4096];
+                            while request.len() < 16_384 {
+                                match stream.read(&mut buffer) {
+                                    Ok(0) | Err(_) => break,
+                                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                                }
+                                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            if !request.windows(4).any(|window| window == b"\r\n\r\n") {
                                 continue;
-                            };
-                            let request = String::from_utf8_lossy(&request[..read]);
+                            }
+                            let request = String::from_utf8_lossy(&request);
                             let path = request
                                 .lines()
                                 .next()
@@ -1075,6 +1088,45 @@ mod tests {
                         if attempts == 1 {
                             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nshort").unwrap();
                         } else {
+                            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").unwrap();
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("loopback server failed: {error}"),
+                }
+            }
+            attempts
+        });
+        let service = ScoreboardService::new();
+        let result = service.request(&format!("http://{address}/scoreboard"), &[]);
+        let attempts = server.join().unwrap();
+        assert_eq!(result.unwrap(), "ok");
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn retries_when_connection_closes_before_response() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut attempts = 0;
+            while attempts < 2 && Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut buffer = [0_u8; 2048];
+                        stream.read(&mut buffer).unwrap();
+                        attempts += 1;
+                        if attempts == 2 {
                             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").unwrap();
                         }
                     }
