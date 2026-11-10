@@ -1,35 +1,38 @@
 # NBA Live Scoreboard
 
-NBA Live Scoreboard is a local desktop scoreboard that pulls live NBA data and renders a game center UI. It starts a lightweight local server and opens the interface in a pywebview window.
+NBA Live Scoreboard is a desktop scoreboard for live NBA games, built with Rust and Tauri.
 
 ## Requirements
-- Python 3.x
-- `nba_api`
-- `pywebview`
-- `plyer`
 
-## Quick start
-1. Install dependencies:
-```bash
-pip install nba_api pywebview plyer
-```
-2. Run the app:
-```bash
-python nba-live-scoreboard.py
+- Rust toolchain and Windows C++ build tools to build the app locally.
+- Microsoft Edge WebView2 Runtime to run the Windows app.
+
+## Build and run
+
+From the repository root, run:
+
+```powershell
+cargo build --locked --release --manifest-path rust-app/src-tauri/Cargo.toml --bin nba-live-scoreboard-rust
+.\rust-app\src-tauri\target\release\nba-live-scoreboard-rust.exe
 ```
 
-The app starts a local server on a random port and opens a window titled "NBA Live Scoreboard".
-For the best experience, run the app in fullscreen.
-This UI is designed for pywebview only; browser usage is not supported.
+The Windows release asset is named `nba-live-scoreboard.exe`. It is the Rust/Tauri app; Python is not needed to run it. The app uses the installed WebView2 Runtime and is currently distributed as an executable rather than an installer.
 
 ## Automated tests
 
-Run `python -m unittest discover -s tests -v`. Backend tests use mocked data. The UI regression tests use a separate headless browser and mocked desktop API; they do not control the desktop or change saved preferences. They are skipped if Python Playwright or its Chromium browser is not installed. To run them, install the optional test dependency with `python -m pip install playwright` and `python -m playwright install chromium`.
+Run the Rust tests with:
 
-## Windows build
-- Local EXE builds use the PyInstaller command with `icon.ico` and bundled `nba-live-scoreboard-ui/`.
-- GitHub pushes to `main` run the PyInstaller build directly via `.github/workflows/windows-release.yml` and publish the generated `nba-live-scoreboard.exe` as a GitHub release asset.
-- CI build dependencies are listed in `requirements-build.txt`.
+```powershell
+cargo test --locked --manifest-path rust-app/src-tauri/Cargo.toml
+```
+
+Run the UI regression cases with `python rust-app/tests/run_ui_regressions.py` after installing Python Playwright and Chromium (`python -m pip install playwright` and `python -m playwright install chromium`). These optional tests use a headless browser and a mocked Tauri bridge; they do not exercise the native window or WebView2 integration.
+
+For the real Tauri integration check, build a debug EXE and run `python rust-app/tests/test_desktop_headless.py`. This optional Windows test needs Python Playwright, psutil, network access, and a recent completed game. It uses isolated settings and a non-displayed desktop.
+
+## Windows release builds
+
+GitHub pushes to `main` build and publish the Rust/Tauri `nba-live-scoreboard.exe` through `.github/workflows/windows-release.yml`. The same executable is also available in the `nba-live-scoreboard-windows` workflow artifact.
 
 ## Features
 ### Game list and navigation
@@ -69,7 +72,7 @@ Run `python -m unittest discover -s tests -v`. Backend tests use mocked data. Th
 - Scrollbars appear on interaction and fade when idle.
 
 ### Favorites
-- Favorites stored to `nba-live-scoreboard-ui/resources/favorites.json`.
+- Favorites carry across launches in the Rust app.
 
 ### Data and reliability
 - Uses NBA live JSON feeds for the scoreboard, box scores, and play-by-play.
@@ -80,7 +83,6 @@ Run `python -m unittest discover -s tests -v`. Backend tests use mocked data. Th
 - Falls back to cached data during backoff and surfaces explicit stale/partial-data banners in the UI.
 - Auto refresh interval adapts for live vs idle games and continues while the app is in the background or minimized.
 - Temporary stat and hover highlights clear when focus changes; similar matchup colors use a contrasting away-team accent.
-- The local UI server handles concurrent browser requests so idle connections do not stall startup.
 
 ## Controls and views
 - Zoom: change UI scale from the header.
@@ -92,16 +94,16 @@ Run `python -m unittest discover -s tests -v`. Backend tests use mocked data. Th
 - Refresh: request an immediate update; a scoreboard fetched in the past two seconds may be reused.
 
 ## Persistence
-- Favorites are saved to `nba-live-scoreboard-ui/resources/favorites.json`.
-- UI preferences are saved to `nba-live-scoreboard-ui/resources/ui-preferences.json`.
+
+The Rust app saves favorites and UI preferences in `%APPDATA%\com.nbalivescoreboard.app\favorites.json` and `%APPDATA%\com.nbalivescoreboard.app\ui-preferences.json`. On first launch, it imports each missing file from the previous prototype directory (`%APPDATA%\com.nbalivescoreboard.rustprototype`) or from the original Python source's `nba-live-scoreboard-ui\resources` when present beside the executable or in the repository for a standard Cargo build. Existing destination files take precedence, and migration leaves the source files in place.
+
+The former Python source stored settings under `nba-live-scoreboard-ui/resources/`, using `favorites.json` and `ui-preferences.json`. Its older single-file executable stored those files in its temporary extraction directory, so changes there may not have survived a restart.
 
 ## Project structure
-- `nba-live-scoreboard.py`: local server, NBA data fetch, caching/backoff, pywebview window.
-- `nba-live-scoreboard-ui/`: front-end assets and UI.
-- `nba-live-scoreboard-ui/index.html`: layout and controls.
-- `nba-live-scoreboard-ui/app.js`: UI logic, polling, rendering.
-- `nba-live-scoreboard-ui/styles.css`: styling and animations.
-- `nba-live-scoreboard-ui/resources/logos/`: team logo SVGs.
+- `rust-app/`: Rust/Tauri desktop app, NBA data services, and embedded UI.
+- `rust-app/ui/`: front-end assets, controls, styling, and team logos.
+- `rust-app/tests/`: optional headless UI and desktop integration checks.
+- `nba-live-scoreboard.py` and `nba-live-scoreboard-ui/`: previous Python implementation, retained for reference and settings migration.
 
 ## Notes
 - On-court tracking is derived from play-by-play substitutions. If play-by-play is unavailable, the last known lineup is reused.

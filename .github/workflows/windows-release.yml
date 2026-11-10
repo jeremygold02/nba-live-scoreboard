@@ -17,25 +17,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements-build.txt
+      - name: Test Rust application
+        shell: pwsh
+        working-directory: rust-app/src-tauri
+        run: cargo test --locked
 
-      - name: Install build dependencies
+      - name: Build Rust executable
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-build.txt
-
-      - name: Build Windows executable
-        shell: cmd
-        run: |
-          pyinstaller --noconfirm --clean --onefile --noconsole --name "nba-live-scoreboard" --icon "icon.ico" --add-data "nba-live-scoreboard-ui;nba-live-scoreboard-ui" nba-live-scoreboard.py
-          if exist "nba-live-scoreboard.exe" del /f /q "nba-live-scoreboard.exe"
-          if exist "dist\nba-live-scoreboard.exe" move /Y "dist\nba-live-scoreboard.exe" "nba-live-scoreboard.exe"
+          cargo build --locked --release --manifest-path rust-app/src-tauri/Cargo.toml --bin nba-live-scoreboard-rust
+          $rustBinary = ".\rust-app\src-tauri\target\release\nba-live-scoreboard-rust.exe"
+          if (-not (Test-Path $rustBinary)) {
+            throw "Expected Rust executable was not created: $rustBinary"
+          }
+          Copy-Item -LiteralPath $rustBinary -Destination ".\nba-live-scoreboard.exe" -Force
 
       - name: Verify executable output
         shell: pwsh
