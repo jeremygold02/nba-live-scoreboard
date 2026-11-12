@@ -1,4 +1,0 @@
-nba_api
-pyinstaller
-pywebview
-requests

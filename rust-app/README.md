@@ -2,8 +2,7 @@
 
 This is the Windows application for NBA Live Scoreboard. Rust handles
 NBA data, caching, settings, and the Tauri desktop shell; the interface uses the
-HTML, CSS, JavaScript, and team logos in `ui/`. The previous Python implementation
-remains in the repository for reference and settings migration.
+HTML, CSS, JavaScript, and team logos in `ui/`.
 
 Windows needs the WebView2 runtime to display the app. Python is required only
 for the optional browser-based tests.

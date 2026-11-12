@@ -10,4 +10,4 @@ The selected home and Compact game mockups were compared with headless captures 
 - **Copy and data:** Date formatting follows the system locale. Both team favorite controls and all existing status, statistics, feed metadata and controls are retained. Sample game and play data differ from the mockups. The generated mockup's unimplemented “View All Plays” link and invented team metrics were omitted.
 - **Behavior and responsive layout:** Headless checks covered search, filters, navigation, favorite controls, score views, stat density, comparison and feed rendering. Both views were inspected at 800 pixels wide. The tables now stack at narrower widths to keep the statistics readable; existing table and play-feed scrolling remain in place.
 
-The app's real pywebview runtime and live NBA connection were not exercised in this headless comparison; the isolated bridge supplied sample data. No assistive-technology audit was performed.
+This historical comparison used the former Python UI with an isolated bridge and sample data; its desktop runtime and the live NBA connection were not exercised. No assistive-technology audit was performed.

@@ -275,6 +275,7 @@ impl DetailService {
             &mut cache,
             &self.health,
         );
+        game["halftimeStartedAt"] = play_state["halftimeStartedAt"].clone();
         apply_on_court(&mut home, &mut away, &play_state["onCourt"]);
         let recent_plays = serialize_recent_plays(&play_state["recentPlays"]);
         let on_court = &play_state["onCourt"];
@@ -472,6 +473,7 @@ fn stale_playbyplay(cached: Option<&Value>, include_on_court: bool) -> Value {
         .map(|value| &value["recentPlays"]["data"])
         .filter(|data| data.as_array().is_some_and(|plays| !plays.is_empty()));
     json!({
+        "halftimeStartedAt": cached.and_then(|value| value["halftimeStartedAt"].as_str()),
         "onCourt": {
             "data": on_court,
             "state": if on_court.is_some() { "stale" } else { "missing" },
@@ -928,12 +930,14 @@ mod tests {
     fn stale_playbyplay_keeps_cached_lineups_and_feed() {
         let result = stale_playbyplay(
             Some(&json!({
+                "halftimeStartedAt": "2026-11-12T01:00:00Z",
                 "onCourt": {"data": {"home": [11], "away": [20]}},
                 "recentPlays": {"data": [{"description": "Basket"}]}
             })),
             true,
         );
         assert_eq!(result["onCourt"]["state"], "stale");
+        assert_eq!(result["halftimeStartedAt"], "2026-11-12T01:00:00Z");
         assert_eq!(result["onCourt"]["data"]["home"], json!([11]));
         assert_eq!(
             serialize_recent_plays(&result["recentPlays"])["state"],

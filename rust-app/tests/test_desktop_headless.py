@@ -357,11 +357,14 @@ def check_minimized_refresh(app, page):
       const label = document.querySelector('#updated');
       window.__desktopQaStarted = performance.now();
       window.__desktopQaResets = [];
+      let previous = label.textContent.trim();
       new MutationObserver(() => {
         const elapsed = performance.now() - window.__desktopQaStarted;
-        if (elapsed > 12000 && /^Updated (?:just now|[0-3]s ago)$/.test(label.textContent.trim())) {
+        const current = label.textContent.trim();
+        if (elapsed > 12000 && current.startsWith('Updated ') && current !== previous) {
           window.__desktopQaResets.push(elapsed);
         }
+        previous = current;
       }).observe(label, {childList: true, characterData: true, subtree: true});
     }""")
     window = app.app_window()

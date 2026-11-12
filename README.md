@@ -46,6 +46,7 @@ GitHub pushes to `main` build and publish the Rust/Tauri `nba-live-scoreboard.ex
 ### Scoreboard and game header
 - Team cards with logos, records, and bright scores that pop on updates.
 - Center status with clock and period formatted as "1st Quarter", "2nd Quarter", or OT.
+- The header shows the local time of the last update, a countdown to scheduled tipoff, and an estimated second-half countdown during halftime when the play-by-play provides the end-of-quarter time.
 - Arena and tipoff details shown beneath the scoreboard.
 - Team color gradients tint the header and background for the active matchup.
 - Period-by-period scoring table with a show/hide toggle.
@@ -95,7 +96,7 @@ GitHub pushes to `main` build and publish the Rust/Tauri `nba-live-scoreboard.ex
 
 ## Persistence
 
-The Rust app saves favorites and UI preferences in `%APPDATA%\com.nbalivescoreboard.app\favorites.json` and `%APPDATA%\com.nbalivescoreboard.app\ui-preferences.json`. On first launch, it imports each missing file from the previous prototype directory (`%APPDATA%\com.nbalivescoreboard.rustprototype`) or from the original Python source's `nba-live-scoreboard-ui\resources` when present beside the executable or in the repository for a standard Cargo build. Existing destination files take precedence, and migration leaves the source files in place.
+The Rust app saves favorites and UI preferences in `%APPDATA%\com.nbalivescoreboard.app\favorites.json` and `%APPDATA%\com.nbalivescoreboard.app\ui-preferences.json`. On first launch, it imports each missing file from the previous prototype directory (`%APPDATA%\com.nbalivescoreboard.rustprototype`) or from the former Python app's `nba-live-scoreboard-ui\resources` when present beside the executable or in the repository for a standard Cargo build. Existing destination files take precedence, and migration leaves the source files in place.
 
 The former Python source stored settings under `nba-live-scoreboard-ui/resources/`, using `favorites.json` and `ui-preferences.json`. Its older single-file executable stored those files in its temporary extraction directory, so changes there may not have survived a restart.
 
@@ -103,7 +104,6 @@ The former Python source stored settings under `nba-live-scoreboard-ui/resources
 - `rust-app/`: Rust/Tauri desktop app, NBA data services, and embedded UI.
 - `rust-app/ui/`: front-end assets, controls, styling, and team logos.
 - `rust-app/tests/`: optional headless UI and desktop integration checks.
-- `nba-live-scoreboard.py` and `nba-live-scoreboard-ui/`: previous Python implementation, retained for reference and settings migration.
 
 ## Notes
 - On-court tracking is derived from play-by-play substitutions. If play-by-play is unavailable, the last known lineup is reused.

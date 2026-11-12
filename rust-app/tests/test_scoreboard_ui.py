@@ -9,7 +9,7 @@ import threading
 import unittest
 
 
-UI_DIR = Path(__file__).resolve().parents[1] / "nba-live-scoreboard-ui"
+UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
 
@@ -77,19 +77,21 @@ class ScoreboardUIRegressionTests(unittest.TestCase):
         }
         bridge = """
             window.fixture = {board: BOARD, detail: DETAIL, fail: false, favorites: [], delay: 0, dates: []};
-            window.pywebview = {api: {
-                get_state: async id => window.fixture.details?.[id] || window.fixture.detail,
-                get_scoreboard: async (_id, _view, date) => {
-                    window.fixture.dates.push(date);
-                    if (window.fixture.delay) await new Promise(resolve => setTimeout(resolve, window.fixture.delay));
-                    if (window.fixture.fail) throw new Error('simulated outage');
-                    return {...window.fixture.board, scoreboardDate: date};
-                },
-                get_favorites: async () => window.fixture.favorites,
-                set_favorites: async value => { window.fixture.favorites = value; },
-                get_preferences: async () => ({}),
-                set_preferences: async () => null,
-            }};
+            window.__TAURI__ = {core: {invoke: async (command, args = {}) => {
+                switch (command) {
+                    case 'get_state': return window.fixture.details?.[args.gameId] || window.fixture.detail;
+                    case 'get_scoreboard':
+                        window.fixture.dates.push(args.scoreboardDate);
+                        if (window.fixture.delay) await new Promise(resolve => setTimeout(resolve, window.fixture.delay));
+                        if (window.fixture.fail) throw new Error('simulated outage');
+                        return {...window.fixture.board, scoreboardDate: args.scoreboardDate};
+                    case 'get_favorites': return window.fixture.favorites;
+                    case 'set_favorites': window.fixture.favorites = args.favorites; return null;
+                    case 'get_preferences': return {};
+                    case 'set_preferences': return null;
+                    default: throw new Error('Unexpected Tauri command: ' + command);
+                }
+            }}};
         """.replace("BOARD", json.dumps(board)).replace("DETAIL", json.dumps(detail))
         self.page.add_init_script(bridge)
         self.page.goto(f"http://127.0.0.1:{self.server.server_port}/index.html", wait_until="networkidle")
@@ -97,6 +99,68 @@ class ScoreboardUIRegressionTests(unittest.TestCase):
 
     def tearDown(self):
         self.assertEqual(self.errors, [], "uncaught browser errors")
+
+    def test_scheduled_countdown_ticks_and_updated_shows_local_clock_time(self):
+        page = self.page
+        page.evaluate("""() => {
+            window.clockNow = Date.now();
+            Date.now = () => window.clockNow;
+            Object.assign(window.fixture.detail.game, {
+                statusKey: 'scheduled', statusText: '8:00 pm ET', period: 0,
+                startTimeUTC: new Date(window.clockNow + 3661000).toISOString(),
+            });
+            window.fixture.detail.status = 'scheduled';
+            window.fixture.detail.dataUpdated = new Date(window.clockNow - 123000).toISOString();
+        }""")
+        page.locator(".game-item__select").click()
+        page.wait_for_function("document.querySelector('#status').textContent === 'Tip-off in 1:01:01'")
+        expected = page.evaluate("""() => 'Updated ' + new Date(window.fixture.detail.dataUpdated)
+            .toLocaleTimeString([], {hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true})""")
+        self.assertEqual(page.locator("#updated").inner_text(), expected)
+        page.evaluate("window.clockNow += 61000")
+        page.wait_for_function("document.querySelector('#status').textContent === 'Tip-off in 1:00:00'")
+        self.assertEqual(page.locator("#updated").inner_text(), expected)
+        page.evaluate("window.clockNow += 3600000")
+        page.wait_for_function("document.querySelector('#status').textContent === 'Tip-off expected shortly'")
+
+    def test_halftime_countdown_when_watching_reopening_and_resuming(self):
+        page = self.page
+        page.evaluate("""() => { window.clockNow = Date.now(); Date.now = () => window.clockNow; }""")
+        page.locator(".game-item__select").click()
+        page.wait_for_selector("#home-table .stats-table")
+        page.evaluate("""() => {
+            Object.assign(window.fixture.detail.game, {
+                statusText: 'Halftime', clock: 'PT00M00.00S',
+                halftimeStartedAt: new Date(window.clockNow - 300000).toISOString(),
+            });
+        }""")
+        page.locator("#refresh-now").click()
+        page.wait_for_function("document.querySelector('#status').textContent === 'Second half begins in ~10:00'")
+        page.locator("#back-to-list").click()
+        page.locator(".game-item__select").click()
+        page.wait_for_function("document.querySelector('#status').textContent === 'Second half begins in ~10:00'")
+        page.evaluate("window.clockNow += 599000")
+        page.wait_for_function("document.querySelector('#status').textContent === 'Second half begins in ~0:01'")
+        page.evaluate("window.clockNow += 1000")
+        page.wait_for_function("document.querySelector('#status').textContent === 'Second half will begin shortly'")
+        page.evaluate("window.fixture.detail.game.statusText = '3rd Quarter'")
+        page.locator("#refresh-now").click()
+        page.wait_for_function("document.querySelector('#status').textContent === '3rd Quarter'")
+
+    def test_missing_halftime_time_and_postponed_game_keep_their_status(self):
+        page = self.page
+        page.evaluate("window.fixture.detail.game.statusText = 'Half'")
+        page.locator(".game-item__select").click()
+        page.wait_for_function("document.querySelector('#status').textContent === 'Half'")
+        page.evaluate("""() => {
+            Object.assign(window.fixture.detail.game, {
+                statusKey: 'scheduled', statusText: 'Postponed',
+                startTimeUTC: new Date(Date.now() + 3600000).toISOString(),
+            });
+            window.fixture.detail.status = 'scheduled';
+        }""")
+        page.locator("#refresh-now").click()
+        page.wait_for_function("document.querySelector('#status').textContent === 'Postponed'")
 
     def test_favorite_keyboard_focus_survives_regrouping(self):
         page = self.page

@@ -127,8 +127,7 @@ let lastDetailRefreshAt = 0;
 let activeCell = null;
 let windowInForeground = true;
 let selectedGameId = "";
-let lastUpdatedAt = null;
-let updatedTimer = null;
+let statusCountdownTimer = null;
 let lastGames = [];
 const favoriteTeams = new Set();
 let statFlashEnabled = true;
@@ -271,18 +270,60 @@ function formatRelativeTime(seconds) {
   return `${days}d ago`;
 }
 
-function updateUpdatedLabel() {
-  if (!lastUpdatedAt) return;
-  const diffSeconds = Math.max(0, (Date.now() - lastUpdatedAt) / 1000);
-  setText(updatedEl, `Updated ${formatRelativeTime(diffSeconds)}`);
+function setUpdatedTime(value) {
+  const updatedAt = parseUpdated(value) ?? Date.now();
+  const time = new Date(updatedAt).toLocaleTimeString([], {
+    hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true,
+  });
+  setText(updatedEl, `Updated ${time}`);
 }
 
-function setUpdatedTime(value) {
-  const parsed = parseUpdated(value);
-  lastUpdatedAt = parsed || Date.now();
-  updateUpdatedLabel();
-  if (!updatedTimer) {
-    updatedTimer = setInterval(updateUpdatedLabel, 1000);
+function clearStatusCountdown() {
+  if (statusCountdownTimer !== null) {
+    clearInterval(statusCountdownTimer);
+    statusCountdownTimer = null;
+  }
+}
+
+function formatCountdown(seconds) {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = String(seconds % 60).padStart(2, "0");
+  const clock = days || hours
+    ? `${days ? String(hours).padStart(2, "0") : hours}:${String(minutes).padStart(2, "0")}:${remainder}`
+    : `${minutes}:${remainder}`;
+  return days ? `${days}d ${clock}` : clock;
+}
+
+function setGameStatus(game) {
+  clearStatusCountdown();
+  statusEl.textContent = game.statusText || getGameStatusLabel(game);
+
+  const status = getGameStatusKey(game);
+  const statusText = String(game.statusText || "").trim();
+  let target;
+  let prefix;
+  let shortly;
+  if (status === "scheduled" && !/postpon|\bppd\b|delay|suspend|cancel/i.test(statusText)) {
+    target = Date.parse(game.startTimeUTC);
+    prefix = "Tip-off in ";
+    shortly = "Tip-off expected shortly";
+  } else if (status === "live" && /^half(?:[\s-]*time)?$/i.test(statusText)) {
+    target = Date.parse(game.halftimeStartedAt) + 15 * 60 * 1000;
+    prefix = "Second half begins in ~";
+    shortly = "Second half will begin shortly";
+  }
+  if (!Number.isFinite(target)) return;
+
+  const update = () => {
+    const seconds = Math.max(0, Math.ceil((target - Date.now()) / 1000));
+    statusEl.textContent = seconds ? `${prefix}${formatCountdown(seconds)}` : shortly;
+    if (!seconds) clearStatusCountdown();
+  };
+  update();
+  if (target > Date.now()) {
+    statusCountdownTimer = setInterval(update, 1000);
   }
 }
 
@@ -454,6 +495,8 @@ function setSelectedGameId(gameId) {
   selectedGameId = gameId || "";
   const changed = previousGameId !== selectedGameId;
   if (changed) {
+    clearStatusCountdown();
+    statusEl.textContent = selectedGameId ? "Loading" : getScoreboardStatusText();
     clearTransientHighlights();
     matchupTeamColors.clear();
   }
@@ -708,6 +751,7 @@ async function refreshScoreboard(options = {}) {
     return;
   }
   if (!canUseDesktopBackend()) {
+    clearStatusCountdown();
     statusEl.textContent = "Waiting";
     renderFallback("Waiting for the desktop connection...");
     return;
@@ -808,6 +852,7 @@ async function refreshDetail(options = {}) {
     return;
   }
   if (!canUseDesktopBackend()) {
+    clearStatusCountdown();
     statusEl.textContent = "Waiting";
     renderFallback("Waiting for the desktop connection...");
     return;
@@ -826,6 +871,8 @@ async function refreshDetail(options = {}) {
     try {
       state = await getDetailState();
     } catch (err) {
+      if (requestedGameId !== selectedGameId) return;
+      clearStatusCountdown();
       statusEl.textContent = "error";
       detailRenderer.clearDataBanner();
       renderFallback(`API error: ${err}`);
@@ -848,6 +895,7 @@ async function refreshDetail(options = {}) {
     }
 
     if (state.status !== "ok" && state.status !== "scheduled" && state.status !== "postgame" && state.status !== "live_no_data") {
+      clearStatusCountdown();
       statusEl.textContent = state.status.replace(/_/g, " ");
       detailRenderer.clearDataBanner();
       renderFallback(
@@ -874,7 +922,7 @@ async function refreshDetail(options = {}) {
       clearFallback();
     }
     detailRenderer.renderDataBanner(state.dataStatus);
-    statusEl.textContent = state.game.statusText || getGameStatusLabel(state.game);
+    setGameStatus(state.game);
     showGameView();
     const home = state.home;
     const away = state.away;

@@ -712,6 +712,28 @@ pub fn build_playbyplay(
         actions.sort_by_key(|action| number(action, "orderNumber"));
     }
 
+    let halftime_started_at = actions
+        .iter()
+        .filter(|action| {
+            number(action, "period") == Some(2)
+                && ((field(action, "actionType").eq_ignore_ascii_case("period")
+                    && field(action, "subType").eq_ignore_ascii_case("end"))
+                    || field(action, "descriptor").eq_ignore_ascii_case("endperiod"))
+        })
+        .filter_map(|action| {
+            let value = field(action, "timeActual").trim();
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|time| (time, value))
+        })
+        .max_by(|(first, _), (second, _)| first.cmp(second))
+        .map(|(_, value)| value.to_owned())
+        .or_else(|| {
+            cached
+                .and_then(|old| old["halftimeStartedAt"].as_str())
+                .map(str::to_owned)
+        });
+
     let mut fallback = Vec::new();
     let mut extracted = Vec::new();
     for action in actions.iter().rev() {
@@ -823,13 +845,51 @@ pub fn build_playbyplay(
     } else {
         result(json!(recent), "fresh", None)
     };
-    json!({"onCourt": court, "recentPlays": recent, "pageFeed": page_feed})
+    json!({"onCourt": court, "recentPlays": recent, "pageFeed": page_feed, "halftimeStartedAt": halftime_started_at})
 }
 
 #[cfg(test)]
 mod tests {
     use super::build_playbyplay;
     use serde_json::{json, Value};
+
+    #[test]
+    fn halftime_uses_the_second_period_end_event_time_and_keeps_it_on_empty_updates() {
+        let payload = json!({"game":{"actions":[
+            {"period":1,"actionType":"period","subType":"end","timeActual":"2026-11-12T00:00:00Z"},
+            {"period":2,"actionType":"2pt","timeActual":"2026-11-12T00:59:59Z"},
+            {"period":2,"actionType":"period","subType":"end","timeActual":"2026-11-12T01:00:00Z"},
+            {"period":3,"actionType":"period","subType":"start","timeActual":"2026-11-12T01:15:00Z"}
+        ]}});
+        let result = build_playbyplay(&payload, &json!({}), &json!({}), false, None);
+        assert_eq!(result["halftimeStartedAt"], "2026-11-12T01:00:00Z");
+
+        let empty = build_playbyplay(
+            &json!({"game":{"actions":[]}}),
+            &json!({}),
+            &json!({}),
+            false,
+            Some(&result),
+        );
+        assert_eq!(empty["halftimeStartedAt"], "2026-11-12T01:00:00Z");
+    }
+
+    #[test]
+    fn halftime_requires_a_valid_end_event_timestamp() {
+        let invalid = json!({"game":{"actions":[
+            {"period":2,"actionType":"period","subType":"end","timeActual":"invalid"},
+            {"period":1,"descriptor":"endperiod","timeActual":"2026-11-12T00:00:00Z"},
+            {"period":2,"actionType":"period","subType":"start","timeActual":"2026-11-12T00:30:00Z"}
+        ]}});
+        let result = build_playbyplay(&invalid, &json!({}), &json!({}), false, None);
+        assert!(result["halftimeStartedAt"].is_null());
+
+        let page = json!({"game":{"source":"hanaV3","actions":[
+            {"period":2,"descriptor":"endperiod","timeActual":"2026-11-12T01:00:00Z"}
+        ]}});
+        let result = build_playbyplay(&page, &json!({}), &json!({}), false, None);
+        assert_eq!(result["halftimeStartedAt"], "2026-11-12T01:00:00Z");
+    }
 
     #[test]
     fn page_feed_preserves_order_duplicate_action_numbers_and_running_scores() {
